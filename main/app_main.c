@@ -14,6 +14,8 @@
 
 #include <camera.h>
 
+#define MAX_CAMERA_SESSIONS 4
+
 #define STREAMING_STATUS_AVAILABLE 0
 #define STREAMING_STATUS_IN_USE 1
 #define STREAMING_STATUS_UNAVAILABLE 2
@@ -100,23 +102,366 @@ void camera_identify(homekit_value_t _value) {
     xTaskCreate(camera_identify_task, "Camera identify", 512, NULL, 2, NULL);
 }
 
+typedef enum {
+    IP_VERSION_IPV4 = 0,
+    IP_VERSION_IPV6 = 1
+} ip_version_t;
+
+
+typedef enum {
+    SRTP_CRYPTO_AES_CM_128_HMAC_SHA1_80 = 0,
+    SRTP_CRYPTO_AES_256_CM_HMAC_SHA1_80 = 1,
+    SRTP_CRYPTO_DISABLED = 2
+} srtp_crypto_suite_t;
+
+
+typedef enum {
+    SESSION_COMMAND_END = 0,
+    SESSION_COMMAND_START = 1,
+    SESSION_COMMAND_SUSPEND = 2,
+    SESSION_COMMAND_RESUME = 3,
+    SESSION_COMMAND_RECONFIGURE = 4,
+} session_command_t;
+
+typedef struct _camera_session_t {
+    char session_id[17];
+    uint8_t status;
+
+    ip_version_t controller_ip_version;
+    char *controller_ip_address;
+    uint16_t controller_video_port;
+    uint16_t controller_audio_port;
+
+    srtp_crypto_suite_t srtp_video_crypto_suite;
+    char srtp_video_master_key[33];
+    size_t srtp_video_master_key_size;
+    char srtp_video_master_salt[15];
+    size_t srtp_video_master_salt_size;
+
+    srtp_crypto_suite_t srtp_audio_crypto_suite;
+    char srtp_audio_master_key[33];
+    size_t srtp_audio_master_key_size;
+    char srtp_audio_master_salt[15];
+    size_t srtp_audio_master_salt_size;
+
+    uint32_t video_ssrc;
+    uint32_t audio_ssrc;
+
+    uint8_t video_rtp_payload_type;
+    uint16_t video_rtp_max_bitrate;
+    float video_rtp_min_rtcp_interval;
+    uint16_t video_rtp_max_mtu;
+
+    struct _camera_session_t *next;
+} camera_session_t;
+
+
+
+camera_session_t *camera_sessions;
+
+camera_session_t *camera_session_new() {
+    return calloc(1, sizeof(camera_session_t));
+}
+
+void camera_session_free(camera_session_t *session) {
+    if (!session)
+        return;
+
+    if (session->controller_ip_address)
+        free(session->controller_ip_address);
+
+    free(session);
+}
+
+int camera_session_add(camera_session_t *session) {
+    if (!camera_sessions) {
+        camera_sessions = session;
+    } else {
+        camera_session_t *t = camera_sessions;
+        int i = 1;
+        while (t->next) {
+            i++;
+            t = t->next;
+        }
+        if (i >= MAX_CAMERA_SESSIONS)
+            return -1;
+
+        t->next = session;
+    }
+
+    return 0;
+}
+
+void camera_session_remove(camera_session_t *session) {
+    if (camera_sessions == session) {
+        camera_sessions = session->next;
+    } else {
+        camera_session_t *t = camera_sessions;
+        while (t->next) {
+            if (t->next == session) {
+                t->next = t->next->next;
+                break;
+            }
+            t = t->next;
+        }
+    }
+}
+
+void camera_on_client_disconnect(client_context_t *context) {
+    camera_session_t *session = homekit_client_data_get(context, 1);
+    if (session) {
+        homekit_client_data_delete(context, 1);
+
+        camera_session_remove(session);
+        camera_session_free(session);
+    }
+}
+
+
 homekit_value_t camera_streaming_status_get() {
     tlv_values_t *tlv = tlv_new();
-    tlv_add_integer_value(tlv, 1, STREAMING_STATUS_AVAILABLE);
+    tlv_add_integer_value(tlv, 1, 1, STREAMING_STATUS_AVAILABLE);
     return HOMEKIT_TLV(tlv);
 }
 
 homekit_value_t camera_setup_endpoints_get() {
-    return HOMEKIT_TLV(tlv_new());
+    ESP_LOGI(TAG, "Creating setup endpoints response");
+    client_context_t *client = homekit_client_get();
+    if (!client) {
+        ESP_LOGI(TAG, "No client found");
+        return HOMEKIT_TLV(tlv_new());
+    }
+
+    camera_session_t *session = homekit_client_data_get(client, 1);
+    if (!session) {
+        ESP_LOGI(TAG, "No camera session found");
+        return HOMEKIT_TLV(tlv_new());
+    }
+
+    tlv_values_t *controller_address = tlv_new();
+    tlv_add_integer_value(controller_address, 1, 1, session->controller_ip_version);
+    tlv_add_string_value(controller_address, 2, session->controller_ip_address);
+    tlv_add_integer_value(controller_address, 3, 2, session->controller_video_port);
+    tlv_add_integer_value(controller_address, 4, 2, session->controller_audio_port);
+
+    tlv_values_t *video_rtp_params = tlv_new();
+    tlv_add_integer_value(video_rtp_params, 1, 1, session->srtp_video_crypto_suite);
+    tlv_add_value(video_rtp_params, 2, (unsigned char*)session->srtp_video_master_key, session->srtp_video_master_key_size);
+    tlv_add_value(video_rtp_params, 3, (unsigned char*)session->srtp_video_master_salt, session->srtp_video_master_salt_size);
+
+    tlv_values_t *audio_rtp_params = tlv_new();
+    tlv_add_integer_value(audio_rtp_params, 1, 1, session->srtp_audio_crypto_suite);
+    tlv_add_value(audio_rtp_params, 2, (unsigned char*)session->srtp_audio_master_key, session->srtp_audio_master_key_size);
+    tlv_add_value(audio_rtp_params, 3, (unsigned char*)session->srtp_audio_master_salt, session->srtp_audio_master_salt_size);
+
+    tlv_values_t *response = tlv_new();
+    tlv_add_value(response, 1, (unsigned char*)session->session_id, 16);
+    tlv_add_integer_value(response, 2, 1, session->status);
+    tlv_add_tlv_value(response, 3, controller_address);
+    tlv_add_tlv_value(response, 4, video_rtp_params);
+    tlv_add_tlv_value(response, 5, audio_rtp_params);
+    tlv_add_integer_value(response, 6, 4, session->video_ssrc);
+    tlv_add_integer_value(response, 7, 4, session->audio_ssrc);
+
+    tlv_free(controller_address);
+    tlv_free(video_rtp_params);
+    tlv_free(audio_rtp_params);
+
+    return HOMEKIT_TLV(response);
 }
 
+
 void camera_setup_endpoints_set(homekit_value_t value) {
-    if (value.format != homekit_format_bool) {
-        printf("Invalid value format: %d\n", value.format);
+    if (value.format != homekit_format_tlv) {
+        ESP_LOGE(TAG, "Invalid value format: %d", value.format);
         return;
     }
 
-    // TODO:
+    #define error_msg "Failed to setup endpoints: "
+
+    client_context_t *client = homekit_client_get();
+    if (!client)
+        return;
+
+    camera_session_t *session = homekit_client_data_get(client, 1);
+    if (!session) {
+        session = camera_session_new();
+    }
+
+    tlv_values_t *request = value.tlv_values;
+
+    tlv_t *v;
+    int x;
+
+    v = tlv_get_value(request, 1);
+    if (!v) {
+        ESP_LOGE(TAG, error_msg "no session ID field");
+        camera_session_free(session);
+        return;
+    }
+
+    if (v->size != 16) {
+        ESP_LOGE(TAG, error_msg "session ID field has invalid size (%d)", v->size);
+        camera_session_free(session);
+        return;
+    }
+    memcpy(session->session_id, (char*)v->value, v->size);
+    session->session_id[v->size] = 0;
+
+    tlv_values_t *controller_address = tlv_get_tlv_value(request, 3);
+    if (!controller_address) {
+        ESP_LOGE(TAG, error_msg "no controller address field");
+        camera_session_free(session);
+        return;
+    }
+
+    x = tlv_get_integer_value(controller_address, 1, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg "no controller IP address version field");
+        tlv_free(controller_address);
+        camera_session_free(session);
+        return;
+    }
+    session->controller_ip_version = x;
+
+    v = tlv_get_value(controller_address, 2);
+    if (!v) {
+        ESP_LOGE(TAG, error_msg "no controller IP address field");
+        tlv_free(controller_address);
+        camera_session_free(session);
+        return;
+    }
+    char *ip_address = strndup((char*)v->value, v->size);
+    session->controller_ip_address = ip_address;
+
+    x = tlv_get_integer_value(controller_address, 3, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg "no controller video port field");
+        tlv_free(controller_address);
+        camera_session_free(session);
+        return;
+    }
+    session->controller_video_port = x;
+
+    x = tlv_get_integer_value(controller_address, 4, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg "no controller audio port field");
+        tlv_free(controller_address);
+        camera_session_free(session);
+        return;
+    }
+    session->controller_audio_port = x;
+
+    tlv_free(controller_address);
+
+    tlv_values_t *rtp_params = tlv_get_tlv_value(request, 4);
+    if (!rtp_params) {
+        ESP_LOGE(TAG, error_msg "no video RTP params field");
+        camera_session_free(session);
+        return;
+    }
+
+    x = tlv_get_integer_value(rtp_params, 1, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg "no video RTP params crypto suite field");
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    session->srtp_video_crypto_suite = x;
+
+    v = tlv_get_value(rtp_params, 2);
+    if (!v) {
+        ESP_LOGE(TAG, error_msg "no video RTP params master key field");
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    if (v->size >= sizeof(session->srtp_video_master_key)) {
+        ESP_LOGE(TAG, error_msg "invalid video RTP params master key size (%d)", v->size);
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    memcpy(session->srtp_video_master_key, (char*)v->value, v->size);
+    session->srtp_video_master_key_size = v->size;
+
+    v = tlv_get_value(rtp_params, 3);
+    if (!v) {
+        ESP_LOGE(TAG, error_msg "no video RTP params master salt field");
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    if (v->size >= sizeof(session->srtp_video_master_salt)) {
+        ESP_LOGE(TAG, error_msg "invalid video RTP params master key size (%d)", v->size);
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    memcpy(session->srtp_video_master_salt, (char*)v->value, v->size);
+    session->srtp_video_master_salt_size = v->size;
+
+    tlv_free(rtp_params);
+
+    rtp_params = tlv_get_tlv_value(request, 5);
+    if (!rtp_params) {
+        ESP_LOGE(TAG, error_msg "no audio RTP params field");
+        camera_session_free(session);
+        return;
+    }
+
+    x = tlv_get_integer_value(rtp_params, 1, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg "no audio RTP params crypto suite field");
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    session->srtp_audio_crypto_suite = x;
+
+    v = tlv_get_value(rtp_params, 2);
+    if (!v) {
+        ESP_LOGE(TAG, error_msg "no audio RTP params master key field");
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    if (v->size >= sizeof(session->srtp_audio_master_key)) {
+        ESP_LOGE(TAG, error_msg "invalid audio RTP params master key size (%d)", v->size);
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    memcpy(session->srtp_audio_master_key, (char*)v->value, v->size);
+    session->srtp_audio_master_key_size = v->size;
+
+    v = tlv_get_value(rtp_params, 3);
+    if (!v) {
+        ESP_LOGE(TAG, error_msg "no audio RTP params master salt field");
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    if (v->size >= sizeof(session->srtp_audio_master_salt)) {
+        ESP_LOGE(TAG, error_msg "invalid audio RTP params master salt size (%d)", v->size);
+        tlv_free(rtp_params);
+        camera_session_free(session);
+        return;
+    }
+    memcpy(session->srtp_audio_master_salt, (char*)v->value, v->size);
+    session->srtp_audio_master_salt_size = v->size;
+
+    tlv_free(rtp_params);
+
+    #undef error_msg
+
+    homekit_client_data_set(client, 1, session);
+
+    if (camera_session_add(session)) {
+        // session registration failed
+        session->status = 2;
+    }
 }
 
 homekit_value_t camera_selected_rtp_configuration_get() {
@@ -124,12 +469,104 @@ homekit_value_t camera_selected_rtp_configuration_get() {
 }
 
 void camera_selected_rtp_configuration_set(homekit_value_t value) {
-    if (value.format != homekit_format_bool) {
-        printf("Invalid value format: %d\n", value.format);
+    if (value.format != homekit_format_tlv) {
+        ESP_LOGE(TAG, "Failed to setup selected RTP config: invalid value format: %d", value.format);
         return;
     }
 
-    // TODO:
+    #define error_msg "Failed to setup selected RTP config: %s"
+
+    client_context_t *client = homekit_client_get();
+    camera_session_t *session = homekit_client_data_get(client, 1);
+    if (!session)
+        return;
+
+    tlv_values_t *request = value.tlv_values;
+    int x;
+
+    tlv_values_t *session_control = tlv_get_tlv_value(request, 1);
+    if (!session_control) {
+        ESP_LOGE(TAG, error_msg, "no session control field");
+        return;
+    }
+    tlv_t *session_id = tlv_get_value(session_control, 1);
+    if (!session_id) {
+        ESP_LOGE(TAG, error_msg, "no session ID field");
+        tlv_free(session_control);
+        return;
+    }
+    // TODO: find session with given ID
+    if (strncmp(session->session_id, (char*)session_id->value, sizeof(session->session_id)-1)) {
+        ESP_LOGE(TAG, error_msg, "invalid session ID");
+        tlv_free(session_control);
+        return;
+    }
+
+    int session_command = tlv_get_integer_value(session_control, 2, -1);
+    if (session_command == -1) {
+        ESP_LOGE(TAG, error_msg, "no command field");
+        tlv_free(session_control);
+        return;
+    }
+    tlv_free(session_control);
+
+    tlv_values_t *selected_video_params = tlv_get_tlv_value(request, 2);
+    if (!selected_video_params) {
+        ESP_LOGE(TAG, error_msg, "no selected video params field");
+        return;
+    }
+
+    tlv_values_t *video_rtp_params = tlv_get_tlv_value(selected_video_params, 4);
+    if (!video_rtp_params) {
+        ESP_LOGE(TAG, error_msg, "no selected video RTP params field");
+        tlv_free(selected_video_params);
+        return;
+    }
+
+    x = tlv_get_integer_value(video_rtp_params, 1, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg, "no selected video RTP payload type field");
+        tlv_free(video_rtp_params);
+        tlv_free(selected_video_params);
+        return;
+    }
+    session->video_rtp_payload_type = x;
+
+    x = tlv_get_integer_value(video_rtp_params, 2, 0);
+    if (x == 0) {
+        ESP_LOGE(TAG, error_msg, "no selected video RTP SSRC field");
+        tlv_free(video_rtp_params);
+        tlv_free(selected_video_params);
+        return;
+    }
+    session->video_ssrc = x;
+
+    x = tlv_get_integer_value(video_rtp_params, 3, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg, "no selected video RTP max bitrate field");
+        tlv_free(video_rtp_params);
+        tlv_free(selected_video_params);
+        return;
+    }
+    session->video_rtp_max_bitrate = x;
+
+    // TODO: parse min RTCP interval
+
+    x = tlv_get_integer_value(video_rtp_params, 5, -1);
+    if (x == -1) {
+        ESP_LOGE(TAG, error_msg, "no selected video RTP max MTU field");
+        tlv_free(video_rtp_params);
+        tlv_free(selected_video_params);
+        return;
+    }
+    session->video_rtp_max_mtu = x;
+
+    tlv_free(video_rtp_params);
+    tlv_free(selected_video_params);
+
+    // TODO: process command
+
+    #undef error_msg
 }
 
 tlv_values_t supported_video_config = {};
@@ -193,48 +630,59 @@ void camera_accessory_init() {
     }
 
     tlv_values_t *video_codec_params = tlv_new();
-    tlv_add_integer_value(video_codec_params, 1, 1);  // Profile ID
-    tlv_add_integer_value(video_codec_params, 2, 0);  // Level
-    tlv_add_integer_value(video_codec_params, 3, 0);  // Packetization mode
-    tlv_add_integer_value(video_codec_params, 4, 0);  // CVO Enabled
-    tlv_add_integer_value(video_codec_params, 5, 1);  // CVO ID
+    tlv_add_integer_value(video_codec_params, 1, 1, 1);  // Profile ID
+    tlv_add_integer_value(video_codec_params, 2, 1, 0);  // Level
+    tlv_add_integer_value(video_codec_params, 3, 1, 0);  // Packetization mode
 
     tlv_values_t *video_attributes = tlv_new();
-    tlv_add_integer_value(video_attributes, 1, 640);  // Image width
-    tlv_add_integer_value(video_attributes, 2, 480);  // Image height
-    tlv_add_integer_value(video_attributes, 3, 30);  // Frame rate
+    tlv_add_integer_value(video_attributes, 1, 2, 640);  // Image width
+    tlv_add_integer_value(video_attributes, 2, 2, 480);  // Image height
+    tlv_add_integer_value(video_attributes, 3, 2, 30);  // Frame rate
 
     tlv_values_t *video_codec_config = tlv_new();
-    tlv_add_integer_value(video_codec_config, 1, 0);  // Video codec type
+    tlv_add_integer_value(video_codec_config, 1, 1, 0);  // Video codec type
     tlv_add_tlv_value(video_codec_config, 2, video_codec_params);  // Video codec params
     tlv_add_tlv_value(video_codec_config, 3, video_attributes);  // Video attributes
 
     tlv_add_tlv_value(&supported_video_config, 1, video_codec_config);
 
+    tlv_free(video_codec_config);
+    tlv_free(video_attributes);
+    tlv_free(video_codec_params);
 
     tlv_values_t *audio_codec_params = tlv_new();
-    tlv_add_integer_value(audio_codec_params, 1, 1);
-    tlv_add_integer_value(audio_codec_params, 2, 0);
-    tlv_add_integer_value(audio_codec_params, 3, 0);
+    tlv_add_integer_value(audio_codec_params, 1, 1, 1);  // Number of audio channels
+    tlv_add_integer_value(audio_codec_params, 2, 1, 0);  // Bit-rate
+    tlv_add_integer_value(audio_codec_params, 3, 1, 2);  // Sample rate
 
     tlv_values_t *audio_codec = tlv_new();
-    tlv_add_integer_value(audio_codec, 1, 3);
+    tlv_add_integer_value(audio_codec, 1, 1, 3);
     tlv_add_tlv_value(audio_codec, 2, audio_codec_params);
 
-    tlv_add_integer_value(&supported_rtp_config, 2, 2);  // SRTP crypto suite
+    tlv_add_tlv_value(&supported_audio_config, 1, audio_codec);
+    tlv_add_integer_value(&supported_audio_config, 2, 1, 0);  // Comfort noise support
+
+    tlv_free(audio_codec);
+    tlv_free(audio_codec_params);
+
+    tlv_add_integer_value(&supported_rtp_config, 2, 1, 0);  // SRTP crypto suite
+
+    camera_sessions = NULL;
 }
 
 
 void camera_on_resource(client_context_t *context) {
-    char *body = (char*) homekit_client_get_request_body(context);
-    body[homekit_client_get_request_body_size(context)] = 0;
+    char *body = (char *)homekit_client_get_request_body(context);
     ESP_LOGI(TAG, "Resource payload: %s", body);
+    // cJSON *json = cJSON_Parse(body);
+    // cJSON_Delete(json);
 
     esp_err_t err = camera_run();
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
         static unsigned char error_payload[] = "HTTP/1.1 500 Camera capture error\r\n\r\n";
         homekit_client_send(context, error_payload, sizeof(error_payload)-1);
+        return;
     }
 
     static unsigned char success_payload[] =
@@ -252,21 +700,24 @@ void camera_on_resource(client_context_t *context) {
     homekit_client_send(context, camera_get_fb(), camera_get_data_size());
 }
 
-
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverride-init"
 homekit_accessory_t *accessories[] = {
-    HOMEKIT_ACCESSORY(.id=1, .category=homekit_accessory_category_ip_camera, .services=(homekit_service_t*[]){
+    HOMEKIT_ACCESSORY(.id=1,
+                      .category=homekit_accessory_category_ip_camera,
+                      .config_number=3,
+                      .services=(homekit_service_t*[])
+    {
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
             HOMEKIT_CHARACTERISTIC(NAME, "M5Stack Camera"),
             HOMEKIT_CHARACTERISTIC(MANUFACTURER, "HaPK"),
-            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "000000000001"),
+            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "1"),
             HOMEKIT_CHARACTERISTIC(MODEL, "M5Stack"),
             HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "0.1"),
             HOMEKIT_CHARACTERISTIC(IDENTIFY, camera_identify),
             NULL
         }),
         HOMEKIT_SERVICE(CAMERA_RTP_STREAM_MANAGEMENT, .primary=true, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Camera"),
-            HOMEKIT_CHARACTERISTIC(STREAMING_STATUS, .getter=camera_streaming_status_get),
             HOMEKIT_CHARACTERISTIC(
                 SUPPORTED_VIDEO_STREAM_CONFIGURATION,
                 .value=HOMEKIT_TLV_(&supported_video_config)
@@ -279,6 +730,7 @@ homekit_accessory_t *accessories[] = {
                 SUPPORTED_RTP_CONFIGURATION,
                 .value=HOMEKIT_TLV_(&supported_rtp_config)
             ),
+            HOMEKIT_CHARACTERISTIC(STREAMING_STATUS, .getter=camera_streaming_status_get),
             HOMEKIT_CHARACTERISTIC(
                 SETUP_ENDPOINTS,
                 .getter=camera_setup_endpoints_get,
@@ -291,10 +743,16 @@ homekit_accessory_t *accessories[] = {
             ),
             NULL
         }),
+        HOMEKIT_SERVICE(MICROPHONE, .characteristics=(homekit_characteristic_t*[]){
+            HOMEKIT_CHARACTERISTIC(VOLUME, 0),
+            HOMEKIT_CHARACTERISTIC(MUTE, false),
+            NULL
+        }),
         NULL
     }),
     NULL
 };
+#pragma GCC diagnostic pop
 
 
 homekit_server_config_t config = {
