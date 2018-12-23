@@ -1,0 +1,6 @@
+CFLAGS += \
+		-DHAVE_AV_CONFIG_H \
+		-Wno-error=pointer-sign \
+		-Wno-error=switch \
+		-Wno-error=maybe-uninitialized \
+		-Wno-error=parentheses
