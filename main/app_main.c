@@ -116,6 +116,15 @@ typedef enum {
 
 
 typedef enum {
+    RTP_SESSION_END = 0,
+    RTP_SESSION_START = 1,
+    RTP_SESSION_SUSPEND = 2,
+    RTP_SESSION_RESUME = 3,
+    RTP_SESSION_RECONFIGURE = 4,
+} rtp_session_command_t;
+
+
+typedef enum {
     SESSION_COMMAND_END = 0,
     SESSION_COMMAND_START = 1,
     SESSION_COMMAND_SUSPEND = 2,
@@ -234,7 +243,6 @@ homekit_value_t camera_setup_endpoints_get() {
 
     camera_session_t *session = homekit_client_data_get(client, 1);
     if (!session) {
-        ESP_LOGI(TAG, "No camera session found");
         return HOMEKIT_TLV(tlv_new());
     }
 
@@ -510,59 +518,61 @@ void camera_selected_rtp_configuration_set(homekit_value_t value) {
     }
     tlv_free(session_control);
 
-    tlv_values_t *selected_video_params = tlv_get_tlv_value(request, 2);
-    if (!selected_video_params) {
-        ESP_LOGE(TAG, error_msg, "no selected video params field");
-        return;
-    }
+    if (session_command == RTP_SESSION_START || session_command == RTP_SESSION_RECONFIGURE) {
+        tlv_values_t *selected_video_params = tlv_get_tlv_value(request, 2);
+        if (!selected_video_params) {
+            ESP_LOGE(TAG, error_msg, "no selected video params field");
+            return;
+        }
 
-    tlv_values_t *video_rtp_params = tlv_get_tlv_value(selected_video_params, 4);
-    if (!video_rtp_params) {
-        ESP_LOGE(TAG, error_msg, "no selected video RTP params field");
-        tlv_free(selected_video_params);
-        return;
-    }
+        tlv_values_t *video_rtp_params = tlv_get_tlv_value(selected_video_params, 4);
+        if (!video_rtp_params) {
+            ESP_LOGE(TAG, error_msg, "no selected video RTP params field");
+            tlv_free(selected_video_params);
+            return;
+        }
 
-    x = tlv_get_integer_value(video_rtp_params, 1, -1);
-    if (x == -1) {
-        ESP_LOGE(TAG, error_msg, "no selected video RTP payload type field");
+        x = tlv_get_integer_value(video_rtp_params, 1, -1);
+        if (x == -1) {
+            ESP_LOGE(TAG, error_msg, "no selected video RTP payload type field");
+            tlv_free(video_rtp_params);
+            tlv_free(selected_video_params);
+            return;
+        }
+        session->video_rtp_payload_type = x;
+
+        x = tlv_get_integer_value(video_rtp_params, 2, 0);
+        if (x == 0) {
+            ESP_LOGE(TAG, error_msg, "no selected video RTP SSRC field");
+            tlv_free(video_rtp_params);
+            tlv_free(selected_video_params);
+            return;
+        }
+        session->video_ssrc = x;
+
+        x = tlv_get_integer_value(video_rtp_params, 3, -1);
+        if (x == -1) {
+            ESP_LOGE(TAG, error_msg, "no selected video RTP max bitrate field");
+            tlv_free(video_rtp_params);
+            tlv_free(selected_video_params);
+            return;
+        }
+        session->video_rtp_max_bitrate = x;
+
+        // TODO: parse min RTCP interval
+
+        x = tlv_get_integer_value(video_rtp_params, 5, -1);
+        if (x == -1) {
+            ESP_LOGE(TAG, error_msg, "no selected video RTP max MTU field");
+            tlv_free(video_rtp_params);
+            tlv_free(selected_video_params);
+            return;
+        }
+        session->video_rtp_max_mtu = x;
+
         tlv_free(video_rtp_params);
         tlv_free(selected_video_params);
-        return;
     }
-    session->video_rtp_payload_type = x;
-
-    x = tlv_get_integer_value(video_rtp_params, 2, 0);
-    if (x == 0) {
-        ESP_LOGE(TAG, error_msg, "no selected video RTP SSRC field");
-        tlv_free(video_rtp_params);
-        tlv_free(selected_video_params);
-        return;
-    }
-    session->video_ssrc = x;
-
-    x = tlv_get_integer_value(video_rtp_params, 3, -1);
-    if (x == -1) {
-        ESP_LOGE(TAG, error_msg, "no selected video RTP max bitrate field");
-        tlv_free(video_rtp_params);
-        tlv_free(selected_video_params);
-        return;
-    }
-    session->video_rtp_max_bitrate = x;
-
-    // TODO: parse min RTCP interval
-
-    x = tlv_get_integer_value(video_rtp_params, 5, -1);
-    if (x == -1) {
-        ESP_LOGE(TAG, error_msg, "no selected video RTP max MTU field");
-        tlv_free(video_rtp_params);
-        tlv_free(selected_video_params);
-        return;
-    }
-    session->video_rtp_max_mtu = x;
-
-    tlv_free(video_rtp_params);
-    tlv_free(selected_video_params);
 
     // TODO: process command
 
