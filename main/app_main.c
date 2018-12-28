@@ -24,10 +24,8 @@
 #define TAG "esp32_camera"
 
 
-#define CAMERA_PIXEL_FORMAT CAMERA_PF_GRAYSCALE
-#define CAMERA_FRAME_SIZE CAMERA_FS_VGA
-static camera_pixelformat_t s_pixel_format;
-
+#define CAMERA_FRAME_SIZE CAMERA_FS_QVGA
+#define CAMERA_FRAME_RATE 30
 
 void on_wifi_ready();
 
@@ -633,6 +631,7 @@ void camera_accessory_init() {
     }
 
     camera_config.pixel_format = s_pixel_format;
+    camera_config.frame_size = CAMERA_FRAME_SIZE;
     err = camera_init(&camera_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
@@ -645,9 +644,9 @@ void camera_accessory_init() {
     tlv_add_integer_value(video_codec_params, 3, 1, 0);  // Packetization mode
 
     tlv_values_t *video_attributes = tlv_new();
-    tlv_add_integer_value(video_attributes, 1, 2, 640);  // Image width
-    tlv_add_integer_value(video_attributes, 2, 2, 480);  // Image height
-    tlv_add_integer_value(video_attributes, 3, 2, 30);  // Frame rate
+    tlv_add_integer_value(video_attributes, 1, 2, camera_get_fb_width());  // Image width
+    tlv_add_integer_value(video_attributes, 2, 2, camera_get_fb_height());  // Image height
+    tlv_add_integer_value(video_attributes, 3, 2, CAMERA_FRAME_RATE);  // Frame rate
 
     tlv_values_t *video_codec_config = tlv_new();
     tlv_add_integer_value(video_codec_config, 1, 1, 0);  // Video codec type
