@@ -6,6 +6,7 @@ COMPONENT_ADD_INCLUDEDIRS = . $(x264_THIRDPARTY_ROOT)
 
 $(eval $(call compile_exclude, $(addprefix $(x264_THIRDPARTY_ROOT)/, \
     common/opencl.o \
+    common/threadpool.o \
     common/win32thread.o \
     encoder/rdo.o \
     encoder/slicetype.o \

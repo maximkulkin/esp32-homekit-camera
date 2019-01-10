@@ -1,7 +1,7 @@
-#define ARCH_X86_64 1
-#define STACK_ALIGNMENT 64
+#define ARCH_X86_64 0
+#define STACK_ALIGNMENT 32
 #define HAVE_POSIXTHREAD 0
-#define HAVE_THREAD 1
+#define HAVE_THREAD 0
 #define HAVE_LOG2F 1
 #define HAVE_STRTOK_R 0
 #define HAVE_MMAP 0
@@ -11,7 +11,7 @@
 #define HAVE_BITDEPTH8 1
 #define HAVE_BITDEPTH10 0
 #define HAVE_GPL 0
-#define HAVE_INTERLACED 1
+#define HAVE_INTERLACED 0
 #define HAVE_OPENCL 0
 #define HAVE_MALLOC_H 0
 #define HAVE_ALTIVEC 0
