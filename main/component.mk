@@ -1,1 +1,1 @@
-COMPONENT_DEPENDS := homekit camera
+COMPONENT_DEPENDS := homekit camera x264

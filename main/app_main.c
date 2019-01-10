@@ -6,6 +6,9 @@
 #include <esp_err.h>
 #include <nvs_flash.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -13,6 +16,9 @@
 #include <homekit/characteristics.h>
 
 #include <camera.h>
+#include <x264.h>
+
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 #define MAX_CAMERA_SESSIONS 4
 
@@ -71,6 +77,7 @@ static void wifi_init() {
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
+
 const int camera_led_gpio = CONFIG_PIN_LED;
 bool camera_led_on = false;
 
@@ -100,6 +107,19 @@ void camera_identify(homekit_value_t _value) {
     printf("Camera identify\n");
     xTaskCreate(camera_identify_task, "Camera identify", 512, NULL, 2, NULL);
 }
+
+typedef struct {
+    unsigned int cc:4;         /* CSRC count */
+    unsigned int extension:1;  /* header extension flag */
+    unsigned int padding:1;    /* padding flag */
+    unsigned int version:2;    /* protocol version */
+    unsigned int payload_type:7;  /* payload type */
+    unsigned int marker:1;     /* marker bit */
+    unsigned int seq:16;       /* sequence number */
+    uint32_t timestamp;        /* timestamp */
+    uint32_t ssrc;             /* synchronization source */
+    uint32_t csrc[];           /* optional CSRC list */
+} rtp_header_t;
 
 typedef enum {
     IP_VERSION_IPV4 = 0,
@@ -160,6 +180,12 @@ typedef struct _camera_session_t {
     float video_rtp_min_rtcp_interval;
     uint16_t video_rtp_max_mtu;
 
+    bool active;
+
+    int video_socket;
+    uint32_t timestamp;
+    uint16_t sequence;
+
     struct _camera_session_t *next;
 } camera_session_t;
 
@@ -177,6 +203,10 @@ void camera_session_free(camera_session_t *session) {
 
     if (session->controller_ip_address)
         free(session->controller_ip_address);
+
+    if (session->video_socket) {
+        close(session->video_socket);
+    }
 
     free(session);
 }
@@ -223,6 +253,137 @@ void camera_on_client_disconnect(client_context_t *context) {
         camera_session_remove(session);
         camera_session_free(session);
     }
+}
+
+
+TaskHandle_t camera_stream_task_handle = NULL;
+
+
+void camera_stream_task(void *args) {
+    x264_param_t param;
+    x264_param_default_preset(&param, "veryfast", "zerolatency");
+
+    // param.i_threads = 1;
+    param.i_width = camera_get_fb_width();
+    param.i_height = camera_get_fb_height();
+    param.i_bitdepth = 8;
+    param.i_csp = X264_CSP_I420;
+    param.i_fps_num = CAMERA_FRAME_RATE;
+    param.i_fps_den = 1;
+
+    param.i_keyint_max = CAMERA_FRAME_RATE;
+    param.b_intra_refresh = 1;
+
+    x264_param_apply_profile(&param, "baseline");
+
+    x264_picture_t pic, pic_out;
+
+    x264_picture_init(&pic);
+    pic.img.i_csp = param.i_csp;
+    pic.img.i_plane = 3;
+    pic.img.i_stride[0] = param.i_width;
+    pic.img.i_stride[1] = param.i_width / 2;
+    pic.img.i_stride[2] = param.i_width / 2;
+    pic.img.plane[0] = camera_get_fb(0);
+    pic.img.plane[1] = camera_get_fb(1);
+    pic.img.plane[2] = camera_get_fb(2);
+
+    x264_t *encoder = x264_encoder_open(&param);
+
+    uint8_t *payload = calloc(1500, 1);
+    rtp_header_t *rtp_header = (rtp_header_t*)payload;
+    rtp_header->version = 2;
+
+    int frame = 0;
+
+    while (true) {
+        esp_err_t err = camera_run();
+        if (err != ESP_OK) {
+            ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
+            continue;
+        }
+
+        pic.i_pts = frame;
+
+        x264_nal_t *nal;
+        int i_nal;
+
+        int frame_size = x264_encoder_encode(encoder, &nal, &i_nal, &pic, &pic_out);
+        if( frame_size < 0 ) {
+            ESP_LOGD(TAG, "Image H264 encoding failed error = %d", frame_size);
+            continue;
+        } else if( frame_size ) {
+
+            for (camera_session_t *session = camera_sessions; session; session=session->next) {
+                if (!session->active)
+                    continue;
+                if (!session->video_socket) {
+                    session->video_socket = socket(PF_INET, SOCK_DGRAM, 0);
+                    if (session->video_socket < 0) {
+                        ESP_LOGE(TAG, "Failed to open video stream socket, error = %d", errno);
+                        continue;
+                    }
+
+                    struct sockaddr_in sin;
+                    sin.sin_family = AF_INET;
+                    // sin.sin_port = htons(session->controller_video_port);
+                    // if (inet_pton(AF_INET, session->controller_ip_address, &sin.sin_addr) <= 0) {
+                    sin.sin_port = htons(6000);
+                    if (inet_pton(AF_INET, "192.168.1.17", &sin.sin_addr) <= 0) {
+                        ESP_LOGE(TAG, "Failed to parse controller IP address");
+                        close(session->video_socket);
+                        session->video_socket = 0;
+                        continue;
+                    }
+
+                    if (connect(session->video_socket, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
+                        ESP_LOGE(TAG, "Failed to connect to controller video port");
+                        close(session->video_socket);
+                        session->video_socket = 0;
+                        continue;
+                    }
+                }
+
+                session->timestamp++;
+
+                rtp_header->payload_type = session->video_rtp_payload_type;
+                rtp_header->ssrc = htonl(session->video_ssrc);
+                rtp_header->timestamp = htonl(session->timestamp);
+
+                size_t sent_size = 0;
+                while (sent_size < frame_size) {
+                    size_t packet_size = MIN(frame_size, session->video_rtp_max_mtu);
+
+                    rtp_header->seq = htonl(session->sequence++);
+                    memcpy(payload + sizeof(rtp_header), nal->p_payload, packet_size);
+                    if (send(session->video_socket, payload, packet_size + sizeof(rtp_header), 0) < 0) {
+                        ESP_LOGE(TAG, "Failed to send RTP packet");
+                        break;
+                    }
+
+                    sent_size += packet_size;
+                }
+            }
+        }
+
+        frame++;
+    }
+
+    x264_encoder_close(encoder);
+}
+
+
+bool camera_stream_task_running() {
+    return camera_stream_task_handle != NULL;
+}
+
+void camera_stream_task_start() {
+    xTaskCreate(camera_stream_task, "Camera Stream",
+                4096*3, NULL, 1, &camera_stream_task_handle);
+}
+
+void camera_stream_task_stop() {
+    vTaskDelete(camera_stream_task_handle);
 }
 
 
@@ -574,6 +735,40 @@ void camera_selected_rtp_configuration_set(homekit_value_t value) {
     }
 
     // TODO: process command
+    switch (session_command) {
+        case SESSION_COMMAND_START:
+        case SESSION_COMMAND_RESUME:
+        case SESSION_COMMAND_RECONFIGURE:
+            session->active = true;
+            if (!camera_stream_task_running()) {
+                camera_stream_task_start();
+            }
+
+            break;
+        case SESSION_COMMAND_SUSPEND:
+        case SESSION_COMMAND_END: {
+            session->active = false;
+
+            if (session->video_socket) {
+                close(session->video_socket);
+                session->video_socket = 0;
+            }
+
+            bool streams_active = false;
+            camera_session_t *s = camera_sessions;
+            while (s) {
+                if (s->active) {
+                    streams_active = true;
+                    break;
+                }
+                s = s->next;
+            }
+            if (!streams_active && camera_stream_task_running()) {
+                camera_stream_task_stop();
+            }
+            break;
+        }
+    }
 
     #undef error_msg
 }
@@ -584,9 +779,14 @@ tlv_values_t supported_rtp_config = {};
 
 
 void camera_accessory_init() {
+    ESP_LOGI(TAG, "Free heap: %d", xPortGetFreeHeapSize());
+
     ESP_ERROR_CHECK(gpio_install_isr_service(0));
     gpio_set_direction(camera_led_gpio, GPIO_MODE_OUTPUT);
     gpio_set_level(camera_led_gpio, 1);
+
+    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("camera", ESP_LOG_VERBOSE);
 
     camera_config_t camera_config = {
         .ledc_channel = LEDC_CHANNEL_0,
@@ -684,6 +884,7 @@ void camera_on_resource(client_context_t *context) {
     char *body = (char *)homekit_client_get_request_body(context);
     ESP_LOGI(TAG, "Resource payload: %s", body);
     // cJSON *json = cJSON_Parse(body);
+    // process json
     // cJSON_Delete(json);
 
     esp_err_t err = camera_run();
@@ -772,6 +973,7 @@ homekit_server_config_t config = {
 
 
 void on_wifi_ready() {
+    camera_accessory_init();
     homekit_server_init(&config);
 }
 
@@ -785,5 +987,4 @@ void app_main(void) {
     }
 
     wifi_init();
-    camera_accessory_init();
 }
