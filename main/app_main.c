@@ -24,6 +24,7 @@
 #define TAG "esp32_camera"
 
 
+#define CAMERA_PIXEL_FORMAT CAMERA_PF_RGB565
 #define CAMERA_FRAME_SIZE CAMERA_FS_QVGA
 #define CAMERA_FRAME_RATE 30
 
@@ -616,13 +617,13 @@ void camera_accessory_init() {
     }
 
     if (camera_model == CAMERA_OV7725) {
-        s_pixel_format = CAMERA_PIXEL_FORMAT;
+        camera_config.pixel_format = CAMERA_PIXEL_FORMAT;
         camera_config.frame_size = CAMERA_FRAME_SIZE;
         ESP_LOGI(TAG, "Detected OV7725 camera, using %s bitmap format",
                  CAMERA_PIXEL_FORMAT == CAMERA_PF_GRAYSCALE ?  "grayscale" : "RGB565");
     } else if (camera_model == CAMERA_OV2640) {
         ESP_LOGI(TAG, "Detected OV2640 camera, using JPEG format");
-        s_pixel_format = CAMERA_PF_JPEG;
+        camera_config.pixel_format = CAMERA_PF_JPEG;
         camera_config.frame_size = CAMERA_FRAME_SIZE;
         camera_config.jpeg_quality = 15;
     } else {
@@ -630,7 +631,6 @@ void camera_accessory_init() {
         return;
     }
 
-    camera_config.pixel_format = s_pixel_format;
     camera_config.frame_size = CAMERA_FRAME_SIZE;
     err = camera_init(&camera_config);
     if (err != ESP_OK) {
