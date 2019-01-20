@@ -94,6 +94,6 @@ extern const vlc_t x264_total_zeros_2x2_dc[3][4];
 extern const vlc_t x264_total_zeros_2x4_dc[7][8];
 extern const vlc_t x264_run_before_init[7][16];
 
-extern uint8_t x264_zero[1024];
+extern const uint8_t x264_zero[1024];
 
 #endif
