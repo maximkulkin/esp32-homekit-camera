@@ -26,11 +26,13 @@
  *****************************************************************************/
 
 #include "common.h"
+#include "cabac.inc"
 
-static uint8_t cabac_contexts[4][QP_MAX_SPEC+1][1024];
+// static uint8_t cabac_contexts[4][QP_MAX_SPEC+1][1024];
 
 void x264_cabac_init( x264_t *h )
 {
+    /*
     int ctx_count = CHROMA444 ? 1024 : 460;
     for( int i = 0; i < 4; i++ )
     {
@@ -43,6 +45,7 @@ void x264_cabac_init( x264_t *h )
                 cabac_contexts[i][qp][j] = (X264_MIN( state, 127-state ) << 1) | (state >> 6);
             }
     }
+    */
 }
 
 void x264_cabac_context_init( x264_t *h, x264_cabac_t *cb, int i_slice_type, int i_qp, int i_model )
