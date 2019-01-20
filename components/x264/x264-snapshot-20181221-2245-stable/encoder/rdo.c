@@ -38,8 +38,9 @@ uint8_t x264_cabac_transition_unary[15][128];
 uint16_t x264_cabac_size_unary[15][128];
 /* Transition and size tables for abs>9 MVD */
 /* Consist of 5 1s and a bypass sign bit */
-static uint8_t cabac_transition_5ones[128];
-static uint16_t cabac_size_5ones[128];
+// static uint8_t cabac_transition_5ones[128];
+// static uint16_t cabac_size_5ones[128];
+#include "rdo.inc"
 
 /* CAVLC: produces exactly the same bit count as a normal encode */
 /* this probably still leaves some unnecessary computations */
@@ -392,6 +393,7 @@ void x264_rdo_init( void )
             x264_cabac_transition_unary[i_prefix][i_ctx] = ctx;
         }
     }
+    /*
     for( int i_ctx = 0; i_ctx < 128; i_ctx++ )
     {
         int f8_bits = 0;
@@ -404,6 +406,7 @@ void x264_rdo_init( void )
         cabac_size_5ones[i_ctx] = f8_bits;
         cabac_transition_5ones[i_ctx] = ctx;
     }
+    */
 }
 
 typedef struct
