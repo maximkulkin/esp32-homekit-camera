@@ -43,6 +43,7 @@ typedef enum {
 } camera_model_t;
 
 typedef struct {
+    int pin_pwdn;           /*!< GPIO pin for camera power down line */
     int pin_reset;          /*!< GPIO pin for camera reset line */
     int pin_xclk;           /*!< GPIO pin for camera XCLK line */
     int pin_sscb_sda;       /*!< GPIO pin for camera SDA line */

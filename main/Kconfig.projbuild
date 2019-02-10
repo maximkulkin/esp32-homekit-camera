@@ -84,6 +84,9 @@ menu "Pin Configuration"
     config PIN_SCL
         int "SCL"
         default "23"
+    config PIN_PWDN
+        int "PWDN"
+        default "-1"
     config PIN_RESET
         int "RESET"
         default "15"

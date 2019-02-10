@@ -132,16 +132,39 @@ esp_err_t camera_probe(const camera_config_t* config, camera_model_t* out_camera
     ESP_LOGD(TAG, "Initializing SSCB");
     SCCB_Init(config->pin_sscb_sda, config->pin_sscb_scl);
 
-    ESP_LOGD(TAG, "Resetting camera");
-    gpio_config_t conf = { 0 };
-    conf.pin_bit_mask = 1LL << config->pin_reset;
-    conf.mode = GPIO_MODE_OUTPUT;
-    gpio_config(&conf);
+    if(config->pin_pwdn >= 0) {
+        ESP_LOGD(TAG, "Resetting camera by power down line");
+        gpio_config_t conf = { 0 };
+        conf.pin_bit_mask = 1LL << config->pin_pwdn;
+        conf.mode = GPIO_MODE_OUTPUT;
+        gpio_config(&conf);
 
-    gpio_set_level(config->pin_reset, 0);
-    delay(10);
-    gpio_set_level(config->pin_reset, 1);
-    delay(10);
+        // carefull, logic is inverted compared to reset pin
+        gpio_set_level(config->pin_pwdn, 1);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+        gpio_set_level(config->pin_pwdn, 0);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+
+    if(config->pin_reset >= 0) {
+        ESP_LOGD(TAG, "Resetting camera");
+        gpio_config_t conf = { 0 };
+        conf.pin_bit_mask = 1LL << config->pin_reset;
+        conf.mode = GPIO_MODE_OUTPUT;
+        gpio_config(&conf);
+
+        gpio_set_level(config->pin_reset, 0);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+        gpio_set_level(config->pin_reset, 1);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+#if CONFIG_OV2640_SUPPORT
+    } else {
+        //reset OV2640
+        SCCB_Write(0x30, 0xFF, 0x01);//bank sensor
+        SCCB_Write(0x30, 0x12, 0x80);//reset
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+#endif
+    }
 
     ESP_LOGD(TAG, "Searching for camera address");
     /* Probe the sensor */

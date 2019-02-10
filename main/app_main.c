@@ -227,6 +227,7 @@ void camera_on_client_disconnect(client_context_t *context) {
 
 
 homekit_value_t camera_streaming_status_get() {
+    ESP_LOGI(TAG, "camera_streaming_status_get message");
     tlv_values_t *tlv = tlv_new();
     tlv_add_integer_value(tlv, 1, 1, STREAMING_STATUS_AVAILABLE);
     return HOMEKIT_TLV(tlv);
@@ -279,6 +280,7 @@ homekit_value_t camera_setup_endpoints_get() {
 
 
 void camera_setup_endpoints_set(homekit_value_t value) {
+    ESP_LOGI(TAG, "Received setup endpoints set message");
     if (value.format != homekit_format_tlv) {
         ESP_LOGE(TAG, "Invalid value format: %d", value.format);
         return;
@@ -476,6 +478,7 @@ homekit_value_t camera_selected_rtp_configuration_get() {
 }
 
 void camera_selected_rtp_configuration_set(homekit_value_t value) {
+    ESP_LOGI(TAG, "Received selected_rtp_configuration_set message");
     if (value.format != homekit_format_tlv) {
         ESP_LOGE(TAG, "Failed to setup selected RTP config: invalid value format: %d", value.format);
         return;
@@ -588,6 +591,19 @@ void camera_accessory_init() {
     gpio_set_direction(camera_led_gpio, GPIO_MODE_OUTPUT);
     gpio_set_level(camera_led_gpio, 1);
 
+    /* IO13, IO14 is designed for JTAG by default,
+     * to use it as generalized input,
+     * firstly declair it as pullup input */
+    gpio_config_t conf;
+    conf.mode = GPIO_MODE_INPUT;
+    conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    conf.intr_type = GPIO_INTR_DISABLE;
+    conf.pin_bit_mask = 1LL << 13;
+    gpio_config(&conf);
+    conf.pin_bit_mask = 1LL << 14;
+    gpio_config(&conf);
+
     camera_config_t camera_config = {
         .ledc_channel = LEDC_CHANNEL_0,
         .ledc_timer = LEDC_TIMER_0,
@@ -605,6 +621,7 @@ void camera_accessory_init() {
         .pin_href = CONFIG_PIN_HREF,
         .pin_sscb_sda = CONFIG_PIN_SDA,
         .pin_sscb_scl = CONFIG_PIN_SCL,
+        .pin_pwdn = CONFIG_PIN_PWDN,
         .pin_reset = CONFIG_PIN_RESET,
         .xclk_freq_hz = CONFIG_XCLK_FREQ,
     };
@@ -646,7 +663,7 @@ void camera_accessory_init() {
     tlv_values_t *video_attributes = tlv_new();
     tlv_add_integer_value(video_attributes, 1, 2, camera_get_fb_width());  // Image width
     tlv_add_integer_value(video_attributes, 2, 2, camera_get_fb_height());  // Image height
-    tlv_add_integer_value(video_attributes, 3, 2, CAMERA_FRAME_RATE);  // Frame rate
+    tlv_add_integer_value(video_attributes, 3, 1, CAMERA_FRAME_RATE);  // Frame rate
 
     tlv_values_t *video_codec_config = tlv_new();
     tlv_add_integer_value(video_codec_config, 1, 1, 0);  // Video codec type
@@ -665,7 +682,7 @@ void camera_accessory_init() {
     tlv_add_integer_value(audio_codec_params, 3, 1, 2);  // Sample rate
 
     tlv_values_t *audio_codec = tlv_new();
-    tlv_add_integer_value(audio_codec, 1, 1, 3);
+    tlv_add_integer_value(audio_codec, 1, 2, 3);
     tlv_add_tlv_value(audio_codec, 2, audio_codec_params);
 
     tlv_add_tlv_value(&supported_audio_config, 1, audio_codec);
@@ -718,7 +735,7 @@ homekit_accessory_t *accessories[] = {
                       .services=(homekit_service_t*[])
     {
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "M5Stack Camera"),
+            HOMEKIT_CHARACTERISTIC(NAME, "Camera"),
             HOMEKIT_CHARACTERISTIC(MANUFACTURER, "HaPK"),
             HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "1"),
             HOMEKIT_CHARACTERISTIC(MODEL, "M5Stack"),
