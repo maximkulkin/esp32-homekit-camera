@@ -912,6 +912,19 @@ void camera_accessory_init() {
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set("camera", ESP_LOG_VERBOSE);
 
+    /* IO13, IO14 is designed for JTAG by default,
+     * to use it as generalized input,
+     * firstly declair it as pullup input */
+    gpio_config_t conf;
+    conf.mode = GPIO_MODE_INPUT;
+    conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    conf.intr_type = GPIO_INTR_DISABLE;
+    conf.pin_bit_mask = 1LL << 13;
+    gpio_config(&conf);
+    conf.pin_bit_mask = 1LL << 14;
+    gpio_config(&conf);
+
     camera_config_t camera_config = {
         .ledc_channel = LEDC_CHANNEL_0,
         .ledc_timer = LEDC_TIMER_0,
