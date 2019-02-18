@@ -967,7 +967,7 @@ void camera_accessory_init() {
     tlv_values_t *video_attributes = tlv_new();
     tlv_add_integer_value(video_attributes, 1, 2, CAMERA_WIDTH);  // Image width
     tlv_add_integer_value(video_attributes, 2, 2, CAMERA_HEIGHT);  // Image height
-    tlv_add_integer_value(video_attributes, 3, 2, CAMERA_FRAME_RATE);  // Frame rate
+    tlv_add_integer_value(video_attributes, 3, 1, CAMERA_FRAME_RATE);  // Frame rate
 
     tlv_values_t *video_codec_config = tlv_new();
     tlv_add_integer_value(video_codec_config, 1, 1, 0);  // Video codec type
@@ -986,7 +986,7 @@ void camera_accessory_init() {
     tlv_add_integer_value(audio_codec_params, 3, 1, 2);  // Sample rate
 
     tlv_values_t *audio_codec = tlv_new();
-    tlv_add_integer_value(audio_codec, 1, 1, 3);
+    tlv_add_integer_value(audio_codec, 1, 2, 3);
     tlv_add_tlv_value(audio_codec, 2, audio_codec_params);
 
     tlv_add_tlv_value(&supported_audio_config, 1, audio_codec);
@@ -1041,10 +1041,10 @@ homekit_accessory_t *accessories[] = {
                       .services=(homekit_service_t*[])
     {
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "M5Stack Camera"),
+            HOMEKIT_CHARACTERISTIC(NAME, "Camera"),
             HOMEKIT_CHARACTERISTIC(MANUFACTURER, "HaPK"),
             HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "1"),
-            HOMEKIT_CHARACTERISTIC(MODEL, "M5Stack"),
+            HOMEKIT_CHARACTERISTIC(MODEL, "1"),
             HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "0.1"),
             HOMEKIT_CHARACTERISTIC(IDENTIFY, camera_identify),
             NULL
