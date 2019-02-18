@@ -16,6 +16,7 @@
 #include <homekit/characteristics.h>
 
 #include <esp_camera.h>
+#include "camera.h"
 #include <x264.h>
 #include <jpeglib.h>
 
@@ -80,7 +81,7 @@ static void wifi_init() {
 }
 
 
-const int camera_led_gpio = CONFIG_PIN_LED;
+const int camera_led_gpio = CONFIG_CAMERA_PIN_LED;
 bool camera_led_on = false;
 
 void camera_led_set(bool on) {
@@ -914,21 +915,22 @@ void camera_accessory_init() {
     camera_config_t camera_config = {
         .ledc_channel = LEDC_CHANNEL_0,
         .ledc_timer = LEDC_TIMER_0,
-        .pin_d0 = CONFIG_PIN_D0,
-        .pin_d1 = CONFIG_PIN_D1,
-        .pin_d2 = CONFIG_PIN_D2,
-        .pin_d3 = CONFIG_PIN_D3,
-        .pin_d4 = CONFIG_PIN_D4,
-        .pin_d5 = CONFIG_PIN_D5,
-        .pin_d6 = CONFIG_PIN_D6,
-        .pin_d7 = CONFIG_PIN_D7,
-        .pin_xclk = CONFIG_PIN_XCLK,
-        .pin_pclk = CONFIG_PIN_PCLK,
-        .pin_vsync = CONFIG_PIN_VSYNC,
-        .pin_href = CONFIG_PIN_HREF,
-        .pin_sscb_sda = CONFIG_PIN_SDA,
-        .pin_sscb_scl = CONFIG_PIN_SCL,
-        .pin_reset = CONFIG_PIN_RESET,
+        .pin_d0 = CAMERA_PIN_D0,
+        .pin_d1 = CAMERA_PIN_D1,
+        .pin_d2 = CAMERA_PIN_D2,
+        .pin_d3 = CAMERA_PIN_D3,
+        .pin_d4 = CAMERA_PIN_D4,
+        .pin_d5 = CAMERA_PIN_D5,
+        .pin_d6 = CAMERA_PIN_D6,
+        .pin_d7 = CAMERA_PIN_D7,
+        .pin_xclk = CAMERA_PIN_XCLK,
+        .pin_pclk = CAMERA_PIN_PCLK,
+        .pin_vsync = CAMERA_PIN_VSYNC,
+        .pin_href = CAMERA_PIN_HREF,
+        .pin_sscb_sda = CAMERA_PIN_SIOD,
+        .pin_sscb_scl = CAMERA_PIN_SIOC,
+        .pin_pwdn = CAMERA_PIN_PWDN,
+        .pin_reset = CAMERA_PIN_RESET,
         .xclk_freq_hz = CONFIG_XCLK_FREQ,
 
         .frame_size = CAMERA_FRAME_SIZE,
