@@ -10,3 +10,6 @@
 [submodule "components/http-parser"]
 	path = components/http-parser
 	url = https://github.com/maximkulkin/esp-http-parser.git
+[submodule "components/esp32-camera"]
+	path = components/esp32-camera
+	url = https://github.com/espressif/esp32-camera.git
