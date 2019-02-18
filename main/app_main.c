@@ -15,8 +15,9 @@
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 
-#include <camera.h>
+#include <esp_camera.h>
 #include <x264.h>
+#include <jpeglib.h>
 
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
@@ -30,9 +31,10 @@
 #define TAG "esp32_camera"
 
 
-#define CAMERA_PIXEL_FORMAT CAMERA_PF_RGB565
-#define CAMERA_FRAME_SIZE CAMERA_FS_QVGA
 #define CAMERA_FRAME_RATE 30
+#define CAMERA_FRAME_SIZE FRAMESIZE_VGA
+#define CAMERA_WIDTH 640
+#define CAMERA_HEIGHT 480
 
 void on_wifi_ready();
 
@@ -152,6 +154,8 @@ typedef enum {
 } session_command_t;
 
 typedef struct _camera_session_t {
+    homekit_client_id_t client_id;
+
     char session_id[17];
     uint8_t status;
 
@@ -245,14 +249,81 @@ void camera_session_remove(camera_session_t *session) {
     }
 }
 
-void camera_on_client_disconnect(client_context_t *context) {
-    camera_session_t *session = homekit_client_data_get(context, 1);
-    if (session) {
-        homekit_client_data_delete(context, 1);
-
-        camera_session_remove(session);
-        camera_session_free(session);
+camera_session_t *camera_session_find_by_client_id(homekit_client_id_t client_id) {
+    camera_session_t *session = camera_sessions;
+    while (session) {
+        if (session->client_id == client_id)
+            return session;
+        session = session->next;
     }
+
+    return NULL;
+}
+
+
+void camera_on_event(homekit_event_t event) {
+    if (event == HOMEKIT_EVENT_CLIENT_DISCONNECTED) {
+        camera_session_t *session = camera_session_find_by_client_id(homekit_get_client_id());
+        if (session) {
+            camera_session_remove(session);
+            camera_session_free(session);
+        }
+    }
+}
+
+
+const static JOCTET EOI_BUFFER[1] = { JPEG_EOI };
+
+typedef struct {
+  struct jpeg_source_mgr pub;
+  const JOCTET *data;
+  size_t len;
+} jpeg_memory_src_mgr;
+
+static void jpeg_memory_src_init_source(j_decompress_ptr cinfo) {
+}
+
+static boolean jpeg_memory_src_fill_input_buffer(j_decompress_ptr cinfo) {
+  jpeg_memory_src_mgr *src = (jpeg_memory_src_mgr *)cinfo->src;
+  // No more data.  Probably an incomplete image;  just output EOI.
+  src->pub.next_input_byte = EOI_BUFFER;
+  src->pub.bytes_in_buffer = 1;
+  return TRUE;
+}
+
+static void jpeg_memory_src_skip_input_data(j_decompress_ptr cinfo, long num_bytes) {
+  jpeg_memory_src_mgr *src = (jpeg_memory_src_mgr *)cinfo->src;
+  if (src->pub.bytes_in_buffer < num_bytes) {
+    // Skipping over all of remaining data;  output EOI.
+    src->pub.next_input_byte = EOI_BUFFER;
+    src->pub.bytes_in_buffer = 1;
+  } else {
+    // Skipping over only some of the remaining data.
+    src->pub.next_input_byte += num_bytes;
+    src->pub.bytes_in_buffer -= num_bytes;
+  }
+}
+
+static void jpeg_memory_src_term_source(j_decompress_ptr cinfo) {
+}
+
+static void jpeg_memory_src_set_source_mgr(j_decompress_ptr cinfo, const char* data, size_t len) {
+  if (cinfo->src == 0) {
+    cinfo->src = (struct jpeg_source_mgr *)(*cinfo->mem->alloc_small)
+      ((j_common_ptr) cinfo, JPOOL_PERMANENT, sizeof(jpeg_memory_src_mgr));
+  }
+
+  jpeg_memory_src_mgr *src = (jpeg_memory_src_mgr *)cinfo->src;
+  src->pub.init_source = jpeg_memory_src_init_source;
+  src->pub.fill_input_buffer = jpeg_memory_src_fill_input_buffer;
+  src->pub.skip_input_data = jpeg_memory_src_skip_input_data;
+  src->pub.resync_to_restart = jpeg_resync_to_restart; // default
+  src->pub.term_source = jpeg_memory_src_term_source;
+  // fill the buffers
+  src->data = (const JOCTET *)data;
+  src->len = len;
+  src->pub.bytes_in_buffer = len;
+  src->pub.next_input_byte = src->data;
 }
 
 
@@ -261,17 +332,18 @@ TaskHandle_t camera_stream_task_handle = NULL;
 
 void camera_stream_task(void *args) {
     x264_param_t param;
-    x264_param_default_preset(&param, "veryfast", "zerolatency");
+    x264_param_default_preset(&param, "ultrafast", "zerolatency");
 
     // param.i_threads = 1;
-    param.i_width = camera_get_fb_width();
-    param.i_height = camera_get_fb_height();
+    param.i_width = CAMERA_WIDTH;
+    param.i_height = CAMERA_HEIGHT;
     param.i_bitdepth = 8;
     param.i_csp = X264_CSP_I420;
-    param.i_fps_num = CAMERA_FRAME_RATE;
+    param.i_fps_num = 2;
     param.i_fps_den = 1;
+    param.i_threads = 1;
 
-    param.i_keyint_max = CAMERA_FRAME_RATE;
+    param.i_keyint_max = 1;
     param.b_intra_refresh = 1;
 
     x264_param_apply_profile(&param, "baseline");
@@ -284,9 +356,15 @@ void camera_stream_task(void *args) {
     pic.img.i_stride[0] = param.i_width;
     pic.img.i_stride[1] = param.i_width / 2;
     pic.img.i_stride[2] = param.i_width / 2;
-    pic.img.plane[0] = camera_get_fb(0);
-    pic.img.plane[1] = camera_get_fb(1);
-    pic.img.plane[2] = camera_get_fb(2);
+
+    const int plane_size = CAMERA_WIDTH * CAMERA_HEIGHT;
+    pic.img.plane[0] = malloc(plane_size + plane_size / 2);
+    pic.img.plane[1] = pic.img.plane[0] + plane_size;
+    pic.img.plane[2] = pic.img.plane[1] + plane_size / 4;
+
+    ESP_LOGI(TAG, "Initializing encoder");
+    ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    ESP_LOGI(TAG, "Largest free block: %u", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
     x264_t *encoder = x264_encoder_open(&param);
 
@@ -297,20 +375,63 @@ void camera_stream_task(void *args) {
     int frame = 0;
 
     while (true) {
-        esp_err_t err = camera_run();
-        if (err != ESP_OK) {
-            ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            ESP_LOGD(TAG, "Camera capture failed");
             continue;
         }
+
+        struct jpeg_decompress_struct dinfo;
+        struct jpeg_error_mgr jerr;
+
+        dinfo.err = jpeg_std_error(&jerr);
+        jpeg_create_decompress(&dinfo);
+        jpeg_memory_src_set_source_mgr(&dinfo, (const char *)fb->buf, fb->len);
+
+        jpeg_read_header(&dinfo, TRUE);
+
+        dinfo.raw_data_out = true;
+        dinfo.out_color_space = JCS_YCbCr;
+        jpeg_start_decompress(&dinfo);
+
+        #define SAMPLE_SIZE 16
+
+        uint8_t *data_y[SAMPLE_SIZE],
+                *data_cb[SAMPLE_SIZE/2],
+                *data_cr[SAMPLE_SIZE/2];
+        uint8_t **data[3];
+        data[0] = data_y;
+        data[1] = data_cb;
+        data[2] = data_cr;
+
+        for (size_t j=0; j<dinfo.output_height; ) {
+            for (size_t i=0; i<SAMPLE_SIZE; i+=2) {
+                data_y[i]   = pic.img.plane[0] + dinfo.image_width * (i+j);
+                data_y[i+1] = pic.img.plane[0] + dinfo.image_width * (i+1+j);
+                data_cb[i / 2] = pic.img.plane[1] + dinfo.image_width / 2 * ((i + j) / 2);
+                data_cr[i / 2] = pic.img.plane[2] + dinfo.image_width / 2 * ((i + j) / 2);
+            }
+
+            j += jpeg_read_raw_data(&dinfo, data, SAMPLE_SIZE);
+        }
+
+        jpeg_finish_decompress(&dinfo);
+        jpeg_destroy_decompress(&dinfo);
+
+        esp_camera_fb_return(fb);
 
         pic.i_pts = frame;
 
         x264_nal_t *nal;
         int i_nal;
 
+        ESP_LOGI(TAG, "Encoding a frame");
+        ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+        // ESP_LOGI(TAG, "Largest free block: %u", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+
         int frame_size = x264_encoder_encode(encoder, &nal, &i_nal, &pic, &pic_out);
         if( frame_size < 0 ) {
-            ESP_LOGD(TAG, "Image H264 encoding failed error = %d", frame_size);
+            ESP_LOGE(TAG, "Image H264 encoding failed error = %d", frame_size);
             continue;
         } else if( frame_size ) {
 
@@ -329,7 +450,7 @@ void camera_stream_task(void *args) {
                     // sin.sin_port = htons(session->controller_video_port);
                     // if (inet_pton(AF_INET, session->controller_ip_address, &sin.sin_addr) <= 0) {
                     sin.sin_port = htons(6000);
-                    if (inet_pton(AF_INET, "192.168.1.17", &sin.sin_addr) <= 0) {
+                    if (inet_pton(AF_INET, "10.0.1.5", &sin.sin_addr) <= 0) {
                         ESP_LOGE(TAG, "Failed to parse controller IP address");
                         close(session->video_socket);
                         session->video_socket = 0;
@@ -370,6 +491,12 @@ void camera_stream_task(void *args) {
     }
 
     x264_encoder_close(encoder);
+
+    free(pic.img.plane[0]);
+
+    ESP_LOGI(TAG, "Done with stream");
+    ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    ESP_LOGI(TAG, "Largest free block: %u", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 }
 
 
@@ -379,7 +506,7 @@ bool camera_stream_task_running() {
 
 void camera_stream_task_start() {
     xTaskCreate(camera_stream_task, "Camera Stream",
-                4096*3, NULL, 1, &camera_stream_task_handle);
+                4096*8, NULL, 1, &camera_stream_task_handle);
 }
 
 void camera_stream_task_stop() {
@@ -395,13 +522,13 @@ homekit_value_t camera_streaming_status_get() {
 
 homekit_value_t camera_setup_endpoints_get() {
     ESP_LOGI(TAG, "Creating setup endpoints response");
-    client_context_t *client = homekit_client_get();
-    if (!client) {
+    homekit_client_id_t client_id = homekit_get_client_id();
+    if (!client_id) {
         ESP_LOGI(TAG, "No client found");
         return HOMEKIT_TLV(tlv_new());
     }
 
-    camera_session_t *session = homekit_client_data_get(client, 1);
+    camera_session_t *session = camera_session_find_by_client_id(client_id);
     if (!session) {
         return HOMEKIT_TLV(tlv_new());
     }
@@ -447,13 +574,12 @@ void camera_setup_endpoints_set(homekit_value_t value) {
 
     #define error_msg "Failed to setup endpoints: "
 
-    client_context_t *client = homekit_client_get();
-    if (!client)
-        return;
+    homekit_client_id_t client_id = homekit_get_client_id();
 
-    camera_session_t *session = homekit_client_data_get(client, 1);
+    camera_session_t *session = camera_session_find_by_client_id(client_id);
     if (!session) {
         session = camera_session_new();
+        session->client_id = client_id;
     }
 
     tlv_values_t *request = value.tlv_values;
@@ -624,8 +750,6 @@ void camera_setup_endpoints_set(homekit_value_t value) {
 
     #undef error_msg
 
-    homekit_client_data_set(client, 1, session);
-
     if (camera_session_add(session)) {
         // session registration failed
         session->status = 2;
@@ -644,8 +768,7 @@ void camera_selected_rtp_configuration_set(homekit_value_t value) {
 
     #define error_msg "Failed to setup selected RTP config: %s"
 
-    client_context_t *client = homekit_client_get();
-    camera_session_t *session = homekit_client_data_get(client, 1);
+    camera_session_t *session = camera_session_find_by_client_id(homekit_get_client_id());
     if (!session)
         return;
 
@@ -807,32 +930,15 @@ void camera_accessory_init() {
         .pin_sscb_scl = CONFIG_PIN_SCL,
         .pin_reset = CONFIG_PIN_RESET,
         .xclk_freq_hz = CONFIG_XCLK_FREQ,
+
+        .frame_size = CAMERA_FRAME_SIZE,
+        .pixel_format = PIXFORMAT_JPEG,
+        .jpeg_quality = 15,
+
+        .fb_count = 2,
     };
 
-    camera_model_t camera_model;
-    esp_err_t err = camera_probe(&camera_config, &camera_model);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Camera probe failed with error 0x%x", err);
-        return;
-    }
-
-    if (camera_model == CAMERA_OV7725) {
-        camera_config.pixel_format = CAMERA_PIXEL_FORMAT;
-        camera_config.frame_size = CAMERA_FRAME_SIZE;
-        ESP_LOGI(TAG, "Detected OV7725 camera, using %s bitmap format",
-                 CAMERA_PIXEL_FORMAT == CAMERA_PF_GRAYSCALE ?  "grayscale" : "RGB565");
-    } else if (camera_model == CAMERA_OV2640) {
-        ESP_LOGI(TAG, "Detected OV2640 camera, using JPEG format");
-        camera_config.pixel_format = CAMERA_PF_JPEG;
-        camera_config.frame_size = CAMERA_FRAME_SIZE;
-        camera_config.jpeg_quality = 15;
-    } else {
-        ESP_LOGE(TAG, "Camera not supported");
-        return;
-    }
-
-    camera_config.frame_size = CAMERA_FRAME_SIZE;
-    err = camera_init(&camera_config);
+    esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
         return;
@@ -844,8 +950,8 @@ void camera_accessory_init() {
     tlv_add_integer_value(video_codec_params, 3, 1, 0);  // Packetization mode
 
     tlv_values_t *video_attributes = tlv_new();
-    tlv_add_integer_value(video_attributes, 1, 2, camera_get_fb_width());  // Image width
-    tlv_add_integer_value(video_attributes, 2, 2, camera_get_fb_height());  // Image height
+    tlv_add_integer_value(video_attributes, 1, 2, CAMERA_WIDTH);  // Image width
+    tlv_add_integer_value(video_attributes, 2, 2, CAMERA_HEIGHT);  // Image height
     tlv_add_integer_value(video_attributes, 3, 2, CAMERA_FRAME_RATE);  // Frame rate
 
     tlv_values_t *video_codec_config = tlv_new();
@@ -880,18 +986,17 @@ void camera_accessory_init() {
 }
 
 
-void camera_on_resource(client_context_t *context) {
-    char *body = (char *)homekit_client_get_request_body(context);
+void camera_on_resource(const char *body, size_t body_size) {
     ESP_LOGI(TAG, "Resource payload: %s", body);
     // cJSON *json = cJSON_Parse(body);
     // process json
     // cJSON_Delete(json);
 
-    esp_err_t err = camera_run();
-    if (err != ESP_OK) {
-        ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        ESP_LOGD(TAG, "Camera capture failed");
         static unsigned char error_payload[] = "HTTP/1.1 500 Camera capture error\r\n\r\n";
-        homekit_client_send(context, error_payload, sizeof(error_payload)-1);
+        homekit_client_send(error_payload, sizeof(error_payload)-1);
         return;
     }
 
@@ -901,13 +1006,15 @@ void camera_on_resource(client_context_t *context) {
         "Content-Disposition: inline; filename=capture.jpg\r\n"
         "Content-Length: ";
 
-    homekit_client_send(context, success_payload, sizeof(success_payload)-1);
+    homekit_client_send(success_payload, sizeof(success_payload)-1);
 
     char buffer[16];
-    snprintf(buffer, sizeof(buffer), "%d\r\n\r\n", camera_get_data_size());
+    snprintf(buffer, sizeof(buffer), "%d\r\n\r\n", fb->len);
 
-    homekit_client_send(context, (unsigned char*) buffer, strlen(buffer));
-    homekit_client_send(context, camera_get_fb(), camera_get_data_size());
+    homekit_client_send((unsigned char*) buffer, strlen(buffer));
+    homekit_client_send(fb->buf, fb->len);
+
+    esp_camera_fb_return(fb);
 }
 
 #pragma GCC diagnostic push
@@ -968,7 +1075,8 @@ homekit_accessory_t *accessories[] = {
 homekit_server_config_t config = {
     .accessories = accessories,
     .password = "111-11-111",
-    .on_resource = camera_on_resource
+    .on_event = camera_on_event,
+    .on_resource = camera_on_resource,
 };
 
 
