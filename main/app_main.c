@@ -11,6 +11,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/event_groups.h>
 
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
@@ -250,6 +251,18 @@ void camera_session_remove(camera_session_t *session) {
     }
 }
 
+bool camera_has_active_sessions() {
+    camera_session_t *s = camera_sessions;
+    while (s) {
+        if (s->active)
+            return true;
+        s = s->next;
+    }
+
+    return false;
+}
+
+
 camera_session_t *camera_session_find_by_client_id(homekit_client_id_t client_id) {
     camera_session_t *session = camera_sessions;
     while (session) {
@@ -259,17 +272,6 @@ camera_session_t *camera_session_find_by_client_id(homekit_client_id_t client_id
     }
 
     return NULL;
-}
-
-
-void camera_on_event(homekit_event_t event) {
-    if (event == HOMEKIT_EVENT_CLIENT_DISCONNECTED) {
-        camera_session_t *session = camera_session_find_by_client_id(homekit_get_client_id());
-        if (session) {
-            camera_session_remove(session);
-            camera_session_free(session);
-        }
-    }
 }
 
 
@@ -329,6 +331,9 @@ static void jpeg_memory_src_set_source_mgr(j_decompress_ptr cinfo, const char* d
 
 
 TaskHandle_t camera_stream_task_handle = NULL;
+EventGroupHandle_t camera_control_events;
+
+#define CAMERA_CONTROL_EVENT_STOP (1 << 0)
 
 
 void camera_stream_task(void *args) {
@@ -376,6 +381,9 @@ void camera_stream_task(void *args) {
     int frame = 0;
 
     while (true) {
+        if (xEventGroupGetBits(camera_control_events) & CAMERA_CONTROL_EVENT_STOP)
+            break;
+
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
             ESP_LOGD(TAG, "Camera capture failed");
@@ -439,6 +447,7 @@ void camera_stream_task(void *args) {
             for (camera_session_t *session = camera_sessions; session; session=session->next) {
                 if (!session->active)
                     continue;
+
                 if (!session->video_socket) {
                     session->video_socket = socket(PF_INET, SOCK_DGRAM, 0);
                     if (session->video_socket < 0) {
@@ -498,6 +507,10 @@ void camera_stream_task(void *args) {
     ESP_LOGI(TAG, "Done with stream");
     ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
     ESP_LOGI(TAG, "Largest free block: %u", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+
+    TaskHandle_t temp_task_handle = camera_stream_task_handle;
+    camera_stream_task_handle = NULL;
+    vTaskDelete(temp_task_handle);
 }
 
 
@@ -506,12 +519,18 @@ bool camera_stream_task_running() {
 }
 
 void camera_stream_task_start() {
+    xEventGroupClearBits(camera_control_events, CAMERA_CONTROL_EVENT_STOP);
+
     xTaskCreate(camera_stream_task, "Camera Stream",
                 4096*8, NULL, 1, &camera_stream_task_handle);
 }
 
 void camera_stream_task_stop() {
-    vTaskDelete(camera_stream_task_handle);
+    if (camera_stream_task_running()) {
+        ESP_LOGI(TAG, "Stopping video stream");
+
+        xEventGroupSetBits(camera_control_events, CAMERA_CONTROL_EVENT_STOP);
+    }
 }
 
 
@@ -878,18 +897,9 @@ void camera_selected_rtp_configuration_set(homekit_value_t value) {
                 session->video_socket = 0;
             }
 
-            bool streams_active = false;
-            camera_session_t *s = camera_sessions;
-            while (s) {
-                if (s->active) {
-                    streams_active = true;
-                    break;
-                }
-                s = s->next;
-            }
-            if (!streams_active && camera_stream_task_running()) {
+            if (!camera_has_active_sessions())
                 camera_stream_task_stop();
-            }
+
             break;
         }
     }
@@ -998,6 +1008,12 @@ void camera_accessory_init() {
     tlv_add_integer_value(&supported_rtp_config, 2, 1, 0);  // SRTP crypto suite
 
     camera_sessions = NULL;
+
+    camera_control_events = xEventGroupCreate();
+    if (camera_control_events == NULL) {
+        ESP_LOGE(TAG, "Failed to create camera control event group");
+        return;
+    }
 }
 
 
@@ -1031,6 +1047,21 @@ void camera_on_resource(const char *body, size_t body_size) {
 
     esp_camera_fb_return(fb);
 }
+
+
+void camera_on_event(homekit_event_t event) {
+    if (event == HOMEKIT_EVENT_CLIENT_DISCONNECTED) {
+        camera_session_t *session = camera_session_find_by_client_id(homekit_get_client_id());
+        if (session) {
+            camera_session_remove(session);
+            camera_session_free(session);
+
+            if (!camera_has_active_sessions())
+                camera_stream_task_stop();
+        }
+    }
+}
+
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverride-init"
