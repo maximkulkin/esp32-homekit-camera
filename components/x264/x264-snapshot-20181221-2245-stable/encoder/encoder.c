@@ -1615,7 +1615,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
     }
 
     h->out.i_nal = 0;
-    h->out.i_bitstream = X264_MAX( 1000000, h->param.i_width * h->param.i_height * 4
+    h->out.i_bitstream = X264_MAX( 100000, h->param.i_width * h->param.i_height * 4
         * ( h->param.rc.i_rc_method == X264_RC_ABR ? pow( 0.95, h->param.rc.i_qp_min )
           : pow( 0.95, h->param.rc.i_qp_constant ) * X264_MAX( 1, h->param.rc.f_ip_factor )));
 
