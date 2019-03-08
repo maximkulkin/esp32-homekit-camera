@@ -481,18 +481,22 @@ void camera_stream_task(void *args) {
                 rtp_header->ssrc = htonl(session->video_ssrc);
                 rtp_header->timestamp = htonl(session->timestamp);
 
-                size_t sent_size = 0;
-                while (sent_size < frame_size) {
-                    size_t packet_size = MIN(frame_size, session->video_rtp_max_mtu);
+                uint8_t *p = nal->p_payload;
+                size_t size_left = frame_size;
+
+                while (size_left) {
+                    size_t packet_size = MIN(size_left, session->video_rtp_max_mtu);
 
                     rtp_header->seq = htonl(session->sequence++);
-                    memcpy(payload + sizeof(rtp_header), nal->p_payload, packet_size);
-                    if (send(session->video_socket, payload, packet_size + sizeof(rtp_header), 0) < 0) {
-                        ESP_LOGE(TAG, "Failed to send RTP packet");
+                    memcpy(payload + sizeof(rtp_header_t), p, packet_size);
+                    int r = send(session->video_socket, payload, packet_size + sizeof(rtp_header_t), 0);
+                    if (r < 0) {
+                        ESP_LOGE(TAG, "Failed to send RTP packet (code %d)", r);
                         break;
                     }
 
-                    sent_size += packet_size;
+                    size_left -= packet_size;
+                    p += packet_size;
                 }
             }
         }
