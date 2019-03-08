@@ -34,7 +34,7 @@
 
 
 #define CAMERA_FRAME_RATE 30
-#define CAMERA_FRAME_SIZE FRAMESIZE_VGA
+#define CAMERA_FRAME_SIZE FRAMESIZE_QVGA
 #define CAMERA_WIDTH 640
 #define CAMERA_HEIGHT 480
 
@@ -341,11 +341,11 @@ void camera_stream_task(void *args) {
     x264_param_default_preset(&param, "ultrafast", "zerolatency");
 
     // param.i_threads = 1;
-    param.i_width = CAMERA_WIDTH;
-    param.i_height = CAMERA_HEIGHT;
+    param.i_width = 320;
+    param.i_height = 240;
     param.i_bitdepth = 8;
     param.i_csp = X264_CSP_I420;
-    param.i_fps_num = 2;
+    param.i_fps_num = 1;
     param.i_fps_den = 1;
     param.i_threads = 1;
 
@@ -364,9 +364,9 @@ void camera_stream_task(void *args) {
     pic.img.i_stride[2] = param.i_width / 2;
 
     const int plane_size = CAMERA_WIDTH * CAMERA_HEIGHT;
-    pic.img.plane[0] = malloc(plane_size + plane_size / 2);
+    pic.img.plane[0] = malloc(plane_size * 3);
     pic.img.plane[1] = pic.img.plane[0] + plane_size;
-    pic.img.plane[2] = pic.img.plane[1] + plane_size / 4;
+    pic.img.plane[2] = pic.img.plane[1] + plane_size;
 
     ESP_LOGI(TAG, "Initializing encoder");
     ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
