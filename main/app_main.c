@@ -16,6 +16,9 @@
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 
+#include <wolfssl/wolfcrypt/aes.h>
+#include <wolfssl/wolfcrypt/hmac.h>
+
 #include <esp_camera.h>
 #include "camera.h"
 #include <x264.h>
@@ -37,6 +40,8 @@
 #define CAMERA_FRAME_SIZE FRAMESIZE_QVGA
 #define CAMERA_WIDTH 640
 #define CAMERA_HEIGHT 480
+
+#define RTP_MAX_PACKET_LENGTH 8192
 
 void on_wifi_ready();
 
@@ -167,15 +172,15 @@ typedef struct _camera_session_t {
     uint16_t controller_audio_port;
 
     srtp_crypto_suite_t srtp_video_crypto_suite;
-    char srtp_video_master_key[33];
+    uint8_t srtp_video_master_key[33];
     size_t srtp_video_master_key_size;
-    char srtp_video_master_salt[15];
+    uint8_t srtp_video_master_salt[15];
     size_t srtp_video_master_salt_size;
 
     srtp_crypto_suite_t srtp_audio_crypto_suite;
-    char srtp_audio_master_key[33];
+    uint8_t srtp_audio_master_key[33];
     size_t srtp_audio_master_key_size;
-    char srtp_audio_master_salt[15];
+    uint8_t srtp_audio_master_salt[15];
     size_t srtp_audio_master_salt_size;
 
     uint32_t video_ssrc;
@@ -191,6 +196,19 @@ typedef struct _camera_session_t {
     int video_socket;
     uint32_t timestamp;
     uint16_t sequence;
+
+    int sequence_largest;
+    uint32_t rtcp_index;
+    uint32_t roc;
+    uint8_t video_rtp_key[16],  video_rtcp_key[16];
+    uint8_t video_rtp_salt[14], video_rtcp_salt[14];
+    uint8_t video_rtp_auth[20], video_rtcp_auth[20];
+
+    /*
+    uint8_t audio_rtp_key[16],  audio_rtcp_key[16];
+    uint8_t audio_rtp_salt[14], audio_rtcp_salt[14];
+    uint8_t audio_rtp_auth[20], audio_rtcp_auth[20];
+    */
 
     struct _camera_session_t *next;
 } camera_session_t;
@@ -330,6 +348,160 @@ static void jpeg_memory_src_set_source_mgr(j_decompress_ptr cinfo, const char* d
 }
 
 
+static void srtp_encrypt_counter(Aes *aes, uint8_t *iv, uint8_t *outbuf, int outlen) {
+    int i, j, outpos;
+    for (i = 0, outpos = 0; outpos < outlen; i++) {
+        uint8_t keystream[16];
+        iv[14] = i & 0xff;
+        iv[15] = (i >> 8) & 0xff;
+
+        wc_AesCtrEncrypt(aes, keystream, iv, 16);
+        for (j = 0; j < 16 && outpos < outlen; j++, outpos++)
+            outbuf[outpos] ^= keystream[j];
+    }
+}
+
+static void srtp_derive_key(Aes *aes, const uint8_t *salt, int label, uint8_t *out, int outlen) {
+    uint8_t input[16] = { 0 };
+    memcpy(input, salt, 14);
+    // Key derivation rate assumed to be zero
+    input[14 - 7] ^= label;
+    memset(out, 0, outlen);
+    srtp_encrypt_counter(aes, input, out, outlen);
+}
+
+static void srtp_create_iv(uint8_t *iv, const uint8_t *salt, uint64_t index, uint32_t ssrc) {
+    memset(iv, 0, 16);
+    *((uint32_t*)iv + 4) = ssrc;
+
+    uint8_t indexbuf[8];
+    *((uint64_t*)indexbuf) = index;
+
+    int i;
+    for (i = 0; i < 8; i++) // index << 16
+        iv[6 + i] ^= indexbuf[i];
+
+    for (i = 0; i < 14; i++)
+        iv[i] ^= salt[i];
+}
+
+
+int srtp_encrypt(camera_session_t *session, const uint8_t *in, int len, uint8_t *out, int outlen) {
+    if (len < 8)
+        return -1;
+
+    int rtcp = false; // RTP_PT_IS_RTCP(in[1]);
+    int hmac_size = 10; //rtcp ? s->rtcp_hmac_size : s->rtp_hmac_size;
+    int padding = hmac_size;
+    if (rtcp)
+        padding += 4; // For the RTCP index
+
+    if (len + padding > outlen) {
+        return -1;
+    }
+
+    uint8_t iv[16] = { 0 }, hmac_data[20];
+
+    memcpy(out, in, len);
+    uint8_t *buf = out;
+
+    uint64_t index;
+    uint32_t ssrc;
+
+    if (rtcp) {
+        // TODO:
+        ssrc = *((uint32_t*)buf + 4);
+        index = session->rtcp_index++;
+
+        buf += 8;
+        len -= 8;
+    } else {
+        int ext, csrc;
+        int seq = *((uint16_t*)buf + 2);
+
+        if (len < 12) {
+            return -1;
+        }
+
+        ssrc = *((uint32_t*)buf + 8);
+
+        if (seq < session->sequence_largest)
+            session->roc++;
+        session->sequence_largest = seq;
+        index = seq + (((uint64_t)session->roc) << 16);
+
+        csrc = buf[0] & 0x0f;
+        ext = buf[0] & 0x10;
+
+        buf += 12;
+        len -= 12;
+
+        buf += 4 * csrc;
+        len -= 4 * csrc;
+        if (len < 0) {
+            return -1;
+        }
+
+        if (ext) {
+            if (len < 4) {
+                return -1;
+            }
+            ext = (*((uint16_t*)buf + 2) + 1) * 4;
+            if (len < ext) {
+                return -1;
+            }
+            len -= ext;
+            buf += ext;
+        }
+    }
+
+    srtp_create_iv(iv, rtcp ? session->video_rtcp_salt : session->video_rtp_salt, index, ssrc);
+
+    Aes *aes = malloc(sizeof(Aes));
+    wc_AesInit(aes, NULL, INVALID_DEVID);
+    wc_AesSetKey(
+        aes,
+        rtcp ? session->video_rtcp_key : session->video_rtp_key, 
+        rtcp ? sizeof(session->video_rtcp_key) : sizeof(session->video_rtp_key),
+        iv, AES_ENCRYPTION
+    );
+    srtp_encrypt_counter(aes, iv, buf, len);
+
+    wc_AesFree(aes);
+    free(aes);
+
+    if (rtcp) {
+        *((uint32_t*)buf + len) = 0x80000000 | index;
+        len += 4;
+    }
+
+    Hmac *hmac = malloc(sizeof(Hmac));
+    wc_HmacInit(hmac, NULL, INVALID_DEVID);
+    wc_HmacSetKey(
+        hmac, WC_SHA, 
+        rtcp ? session->video_rtcp_auth : session->video_rtp_auth,
+        rtcp ? sizeof(session->video_rtcp_auth) : sizeof(session->video_rtp_auth)
+    );
+
+    wc_HmacUpdate(hmac, out, buf + len - out);
+
+    if (!rtcp) {
+        uint8_t rocbuf[4];
+        *((uint32_t*)rocbuf) = session->roc;
+        wc_HmacUpdate(hmac, rocbuf, 4);
+    }
+
+    wc_HmacFinal(hmac, hmac_data);
+
+    wc_HmacFree(hmac);
+    free(hmac);
+
+    memcpy(buf + len, hmac_data, hmac_size);
+    len += hmac_size;
+    return buf + len - out;
+}
+
+
 TaskHandle_t camera_stream_task_handle = NULL;
 EventGroupHandle_t camera_control_events;
 
@@ -379,6 +551,16 @@ void camera_stream_task(void *args) {
     rtp_header->version = 2;
 
     int frame = 0;
+    uint8_t *encrypted_buffer = malloc(RTP_MAX_PACKET_LENGTH);
+    if (!encrypted_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate encryption buffer");
+
+        ESP_LOGI(TAG, "Stopping video stream task");
+        TaskHandle_t temp_task_handle = camera_stream_task_handle;
+        camera_stream_task_handle = NULL;
+        vTaskDelete(temp_task_handle);
+        return;
+    }
 
     while (true) {
         if (xEventGroupGetBits(camera_control_events) & CAMERA_CONTROL_EVENT_STOP)
@@ -457,15 +639,14 @@ void camera_stream_task(void *args) {
 
                     struct sockaddr_in sin;
                     sin.sin_family = AF_INET;
-                    // sin.sin_port = htons(session->controller_video_port);
-                    // if (inet_pton(AF_INET, session->controller_ip_address, &sin.sin_addr) <= 0) {
-                    sin.sin_port = htons(6000);
-                    if (inet_pton(AF_INET, "10.0.1.5", &sin.sin_addr) <= 0) {
+                    sin.sin_port = htons(session->controller_video_port);
+                    if (inet_pton(AF_INET, session->controller_ip_address, &sin.sin_addr) <= 0) {
                         ESP_LOGE(TAG, "Failed to parse controller IP address");
                         close(session->video_socket);
                         session->video_socket = 0;
                         continue;
                     }
+                    ESP_LOGI(TAG, "Sending video stream to %s:%d", session->controller_ip_address, session->controller_video_port);
 
                     if (connect(session->video_socket, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
                         ESP_LOGE(TAG, "Failed to connect to controller video port");
@@ -481,10 +662,14 @@ void camera_stream_task(void *args) {
                 rtp_header->ssrc = htonl(session->video_ssrc);
                 rtp_header->timestamp = htonl(session->timestamp);
 
-                uint8_t *p = nal->p_payload;
-                size_t size_left = frame_size;
+                int size_left = srtp_encrypt(session, nal->p_payload, frame_size, encrypted_buffer, RTP_MAX_PACKET_LENGTH);
+                if (size_left < 0) {
+                    ESP_LOGE(TAG, "Failed to encrypt RTP payload (code %d)", size_left);
+                    continue;
+                }
+                uint8_t *p = encrypted_buffer;
 
-                while (size_left) {
+                while (size_left > 0) {
                     size_t packet_size = MIN(size_left, session->video_rtp_max_mtu);
 
                     rtp_header->seq = htonl(session->sequence++);
@@ -773,6 +958,31 @@ void camera_setup_endpoints_set(homekit_value_t value) {
     tlv_free(rtp_params);
 
     #undef error_msg
+
+    Aes *aes = malloc(sizeof(Aes));
+    wc_AesInit(aes, NULL, INVALID_DEVID);
+    wc_AesSetKey(
+        aes,
+        session->srtp_video_master_key, session->srtp_video_master_key_size,
+        (uint8_t*)"0123456789abcdef", AES_ENCRYPTION
+    );
+
+    srtp_derive_key(aes, session->srtp_video_master_salt, 0x00,
+                    session->video_rtp_key, sizeof(session->video_rtp_key));
+    srtp_derive_key(aes, session->srtp_video_master_salt, 0x02,
+                    session->video_rtp_salt, sizeof(session->video_rtp_salt));
+    srtp_derive_key(aes, session->srtp_video_master_salt, 0x01,
+                    session->video_rtp_auth, sizeof(session->video_rtp_auth));
+
+    srtp_derive_key(aes, session->srtp_video_master_salt, 0x03,
+                    session->video_rtcp_key, sizeof(session->video_rtcp_key));
+    srtp_derive_key(aes, session->srtp_video_master_salt, 0x05,
+                    session->video_rtcp_salt, sizeof(session->video_rtcp_salt));
+    srtp_derive_key(aes, session->srtp_video_master_salt, 0x04,
+                    session->video_rtcp_auth, sizeof(session->video_rtcp_auth));
+
+    wc_AesFree(aes);
+    free(aes);
 
     if (camera_session_add(session)) {
         // session registration failed
