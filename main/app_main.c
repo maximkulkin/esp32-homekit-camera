@@ -45,6 +45,8 @@
 
 void on_wifi_ready();
 
+ip4_addr_t ip_address;
+
 esp_err_t event_handler(void *ctx, system_event_t *event)
 {
     switch(event->event_id) {
@@ -54,6 +56,7 @@ esp_err_t event_handler(void *ctx, system_event_t *event)
             break;
         case SYSTEM_EVENT_STA_GOT_IP:
             printf("WiFI ready\n");
+            ip_address = event->event_info.got_ip.ip_info.ip;
             on_wifi_ready();
             break;
         case SYSTEM_EVENT_STA_DISCONNECTED:
@@ -194,6 +197,8 @@ typedef struct _camera_session_t {
     bool active;
 
     int video_socket;
+    // int audio_socket;
+
     uint32_t timestamp;
     uint16_t sequence;
 
@@ -627,33 +632,9 @@ void camera_stream_task(void *args) {
         } else if( frame_size ) {
 
             for (camera_session_t *session = camera_sessions; session; session=session->next) {
-                if (!session->active)
+                if (!session->active) {
+                    ESP_LOGI(TAG, "Skipping inactive session");
                     continue;
-
-                if (!session->video_socket) {
-                    session->video_socket = socket(PF_INET, SOCK_DGRAM, 0);
-                    if (session->video_socket < 0) {
-                        ESP_LOGE(TAG, "Failed to open video stream socket, error = %d", errno);
-                        continue;
-                    }
-
-                    struct sockaddr_in sin;
-                    sin.sin_family = AF_INET;
-                    sin.sin_port = htons(session->controller_video_port);
-                    if (inet_pton(AF_INET, session->controller_ip_address, &sin.sin_addr) <= 0) {
-                        ESP_LOGE(TAG, "Failed to parse controller IP address");
-                        close(session->video_socket);
-                        session->video_socket = 0;
-                        continue;
-                    }
-                    ESP_LOGI(TAG, "Sending video stream to %s:%d", session->controller_ip_address, session->controller_video_port);
-
-                    if (connect(session->video_socket, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
-                        ESP_LOGE(TAG, "Failed to connect to controller video port");
-                        close(session->video_socket);
-                        session->video_socket = 0;
-                        continue;
-                    }
                 }
 
                 session->timestamp++;
@@ -684,6 +665,8 @@ void camera_stream_task(void *args) {
                     p += packet_size;
                 }
             }
+        } else {
+            ESP_LOGE(TAG, "Frame is empty");
         }
 
         frame++;
@@ -742,11 +725,18 @@ homekit_value_t camera_setup_endpoints_get() {
         return HOMEKIT_TLV(tlv_new());
     }
 
-    tlv_values_t *controller_address = tlv_new();
-    tlv_add_integer_value(controller_address, 1, 1, session->controller_ip_version);
-    tlv_add_string_value(controller_address, 2, session->controller_ip_address);
-    tlv_add_integer_value(controller_address, 3, 2, session->controller_video_port);
-    tlv_add_integer_value(controller_address, 4, 2, session->controller_audio_port);
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+
+    tlv_values_t *accessory_address = tlv_new();
+    tlv_add_integer_value(accessory_address, 1, 1, 0);
+    tlv_add_string_value(accessory_address, 2, ip4addr_ntoa(&ip_address));
+
+    getsockname(session->video_socket, (struct sockaddr*)&addr, &addr_len);
+    tlv_add_integer_value(accessory_address, 3, 2, addr.sin_port);
+
+    // getsockname(session->audio_socket, (struct sockaddr*)&addr, &addr_len);
+    tlv_add_integer_value(accessory_address, 4, 2, addr.sin_port);
 
     tlv_values_t *video_rtp_params = tlv_new();
     tlv_add_integer_value(video_rtp_params, 1, 1, session->srtp_video_crypto_suite);
@@ -761,13 +751,13 @@ homekit_value_t camera_setup_endpoints_get() {
     tlv_values_t *response = tlv_new();
     tlv_add_value(response, 1, (unsigned char*)session->session_id, 16);
     tlv_add_integer_value(response, 2, 1, session->status);
-    tlv_add_tlv_value(response, 3, controller_address);
+    tlv_add_tlv_value(response, 3, accessory_address);
     tlv_add_tlv_value(response, 4, video_rtp_params);
     tlv_add_tlv_value(response, 5, audio_rtp_params);
     tlv_add_integer_value(response, 6, 4, session->video_ssrc);
     tlv_add_integer_value(response, 7, 4, session->audio_ssrc);
 
-    tlv_free(controller_address);
+    tlv_free(accessory_address);
     tlv_free(video_rtp_params);
     tlv_free(audio_rtp_params);
 
@@ -984,9 +974,37 @@ void camera_setup_endpoints_set(homekit_value_t value) {
     wc_AesFree(aes);
     free(aes);
 
+    session->video_socket = socket(PF_INET, SOCK_DGRAM, 0);
+    if (session->video_socket < 0) {
+        ESP_LOGE(TAG, "Failed to open video stream socket, error = %d", errno);
+        session->status = 2;
+        return;
+    }
+
+    struct sockaddr_in remote_addr;
+    remote_addr.sin_family = AF_INET;
+    remote_addr.sin_port = htons(session->controller_video_port);
+    if (inet_pton(AF_INET, session->controller_ip_address, &remote_addr.sin_addr) <= 0) {
+        ESP_LOGE(TAG, "Failed to parse controller IP address");
+        close(session->video_socket);
+        session->video_socket = 0;
+        session->status = 2;
+        return;
+    }
+
+    if (connect(session->video_socket, (struct sockaddr*)&remote_addr, sizeof(remote_addr)) < 0) {
+        ESP_LOGE(TAG, "Failed to set video socket connect destination");
+        close(session->video_socket);
+        session->video_socket = 0;
+        session->status = 2;
+        return;
+    }
+
+
     if (camera_session_add(session)) {
         // session registration failed
         session->status = 2;
+        return;
     }
 }
 
