@@ -41,6 +41,8 @@
 #define CAMERA_WIDTH 640
 #define CAMERA_HEIGHT 480
 
+#define RTP_VERSION 2
+#define RTP_MAX_PAYLOAD_SIZE 1348 // TODO: figure out correct value
 #define RTP_MAX_PACKET_LENGTH 8192
 
 void on_wifi_ready();
@@ -513,6 +515,49 @@ EventGroupHandle_t camera_control_events;
 #define CAMERA_CONTROL_EVENT_STOP (1 << 0)
 
 
+uint8_t* find_nal_start(uint8_t* start, uint8_t* end) {
+    if (start >= end)
+        return end;
+
+    uint8_t* p = start;
+    uint8_t state = 0;
+    while (p < end) {
+        switch (state) {
+        case 0:
+            if (*p == 0)
+                state++;
+            break;
+        case 1:
+            if (*p == 0) {
+                state++;
+            } else {
+                state = 0;
+            }
+            break;
+        case 2:
+            if (*p == 0) {
+                state++;
+            } else if (*p == 1) {
+                return p - 2;
+            } else {
+                state = 0;
+            }
+        case 3:
+            if (*p == 1) {
+                return p - 3;
+            } else if (*p != 0) {
+                state = 0;
+            }
+            break;
+        }
+
+        p++;
+    }
+
+    return p;
+}
+
+
 void camera_stream_task(void *args) {
     x264_param_t param;
     x264_param_default_preset(&param, "ultrafast", "zerolatency");
@@ -551,9 +596,9 @@ void camera_stream_task(void *args) {
 
     x264_t *encoder = x264_encoder_open(&param);
 
-    uint8_t *payload = calloc(1500, 1);
+    uint8_t *payload = calloc(1, 1500);
     rtp_header_t *rtp_header = (rtp_header_t*)payload;
-    rtp_header->version = 2;
+    rtp_header->version = RTP_VERSION;
 
     int frame = 0;
     uint8_t *encrypted_buffer = malloc(RTP_MAX_PACKET_LENGTH);
@@ -626,6 +671,7 @@ void camera_stream_task(void *args) {
         // ESP_LOGI(TAG, "Largest free block: %u", heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
         int frame_size = x264_encoder_encode(encoder, &nal, &i_nal, &pic, &pic_out);
+        ESP_LOGI(TAG, "Encoded frame, size = %d", frame_size);
         if( frame_size < 0 ) {
             ESP_LOGE(TAG, "Image H264 encoding failed error = %d", frame_size);
             continue;
@@ -637,32 +683,113 @@ void camera_stream_task(void *args) {
                     continue;
                 }
 
+                uint8_t* end = nal->p_payload + frame_size;
+                uint8_t* chunk = find_nal_start(nal->p_payload, end);
+
                 session->timestamp++;
 
                 rtp_header->payload_type = session->video_rtp_payload_type;
                 rtp_header->ssrc = htonl(session->video_ssrc);
                 rtp_header->timestamp = htonl(session->timestamp);
 
-                int size_left = srtp_encrypt(session, nal->p_payload, frame_size, encrypted_buffer, RTP_MAX_PACKET_LENGTH);
-                if (size_left < 0) {
-                    ESP_LOGE(TAG, "Failed to encrypt RTP payload (code %d)", size_left);
-                    continue;
-                }
-                uint8_t *p = encrypted_buffer;
+                size_t max_payload_size = session->video_rtp_max_mtu;
 
-                while (size_left > 0) {
-                    size_t packet_size = MIN(size_left, session->video_rtp_max_mtu);
+                while (chunk < end) {
+                    chunk += (chunk[2] == 1) ? 3 : 4;  // skip header
 
-                    rtp_header->seq = htonl(session->sequence++);
-                    memcpy(payload + sizeof(rtp_header_t), p, packet_size);
-                    int r = send(session->video_socket, payload, packet_size + sizeof(rtp_header_t), 0);
-                    if (r < 0) {
-                        ESP_LOGE(TAG, "Failed to send RTP packet (code %d)", r);
-                        break;
+                    uint8_t* next_chunk = find_nal_start(chunk, end);
+                    size_t chunk_size = next_chunk - chunk;
+
+                    if (chunk_size <= max_payload_size) {
+                        rtp_header->seq = htonl(session->sequence);
+                        session->sequence = (session->sequence + 1) & 0xffff;
+                        memcpy(payload + sizeof(rtp_header_t), chunk, chunk_size);
+                        size_t payload_size  = sizeof(rtp_header_t) + chunk_size;
+
+                        int encrypted_size = srtp_encrypt(session, payload, payload_size,
+                                                          encrypted_buffer, RTP_MAX_PACKET_LENGTH);
+                        if (encrypted_size < 0) {
+                            ESP_LOGE(TAG, "Failed to encrypt RTP payload (code %d)", encrypted_size);
+                            continue;
+                        }
+
+                        ESP_LOGI(TAG, "Sending RTP packet %d bytes", encrypted_size);
+
+                        int r = send(session->video_socket, encrypted_buffer, encrypted_size, 0);
+                        if (r < 0) {
+                            ESP_LOGE(TAG, "Failed to send RTP packet (code %d)", r);
+                            break;
+                        }
+                    } else {
+                        uint8_t type = chunk[0] & 0x1F;
+                        uint8_t nri = chunk[0] & 0x60;
+
+                        chunk += 1;
+                        chunk_size -= 1;
+
+                        size_t fragment_header_size = 2;
+                        size_t max_fragment_payload_size = max_payload_size - fragment_header_size;
+
+                        uint8_t *fragment_buffer = payload + sizeof(rtp_header_t);
+                        fragment_buffer[0] = 28 | nri;             // Fragmented Unit Indicator (FU-A)
+                        fragment_buffer[1] = (1 << 7) | type;
+
+                        while (chunk_size > max_fragment_payload_size) {
+                            rtp_header->seq = htonl(session->sequence);
+                            session->sequence = (session->sequence + 1) & 0xffff;
+
+                            memcpy(fragment_buffer + 2, chunk, max_fragment_payload_size);
+
+                            chunk += max_fragment_payload_size;
+                            chunk_size -= max_fragment_payload_size;
+
+                            int encrypted_size = srtp_encrypt(
+                                session, payload, sizeof(rtp_header_t) + max_payload_size,
+                                encrypted_buffer, RTP_MAX_PACKET_LENGTH
+                            );
+                            if (encrypted_size < 0) {
+                                ESP_LOGE(TAG, "Failed to encrypt RTP payload (code %d)", encrypted_size);
+                                continue;
+                            }
+
+                            ESP_LOGI(TAG, "Sending RTP packet %d bytes", encrypted_size);
+
+                            int r = send(session->video_socket, encrypted_buffer, encrypted_size, 0);
+                            if (r < 0) {
+                                ESP_LOGE(TAG, "Failed to send RTP packet (code %d)", r);
+                                break;
+                            }
+
+                            fragment_buffer[1] &= ~(1 << 7);  // reset starting fragment flag
+                        }
+
+                        fragment_buffer[1] |= 1 << 6;         // ending fragment flag
+
+                        rtp_header->seq = htonl(session->sequence);
+                        session->sequence = (session->sequence + 1) & 0xffff;
+
+                        memcpy(fragment_buffer + 2, chunk, chunk_size);
+
+                        int encrypted_size = srtp_encrypt(
+                            session, payload, sizeof(rtp_header_t) + chunk_size,
+                            encrypted_buffer, RTP_MAX_PACKET_LENGTH
+                        );
+                        if (encrypted_size < 0) {
+                            ESP_LOGE(TAG, "Failed to encrypt RTP payload (code %d)", encrypted_size);
+                            continue;
+                        }
+
+                        ESP_LOGI(TAG, "Sending RTP packet %d bytes", encrypted_size);
+
+                        int r = send(session->video_socket, encrypted_buffer, encrypted_size, 0);
+                        if (r < 0) {
+                            ESP_LOGE(TAG, "Failed to send RTP packet (code %d)", r);
+                            break;
+                        }
                     }
 
-                    size_left -= packet_size;
-                    p += packet_size;
+                    chunk = next_chunk;
+                    next_chunk = find_nal_start(chunk + 3, end);
                 }
             }
         } else {
@@ -1147,7 +1274,7 @@ tlv_values_t supported_rtp_config = {};
 void camera_accessory_init() {
     ESP_LOGI(TAG, "Free heap: %d", xPortGetFreeHeapSize());
 
-    ESP_ERROR_CHECK(gpio_install_isr_service(0));
+    // ESP_ERROR_CHECK(gpio_install_isr_service(0));
     gpio_set_direction(camera_led_gpio, GPIO_MODE_OUTPUT);
     gpio_set_level(camera_led_gpio, 1);
 
