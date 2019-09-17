@@ -818,6 +818,9 @@ bool camera_stream_task_running() {
 }
 
 void camera_stream_task_start() {
+    // TODO: re-enable streaming once it works
+    return;
+
     xEventGroupClearBits(camera_control_events, CAMERA_CONTROL_EVENT_STOP);
 
     xTaskCreate(camera_stream_task, "Camera Stream",
