@@ -19,7 +19,9 @@ menuconfig`):
             * SPI RAM access method = **Make RAM allocatable using malloc() as well**
     * Camera configuration
         * OV2640 Support = **check**
+    * HomeKit
+        * SPI flash address for storing HomeKit data = 0x3A0000
 * ESP32 HomeKit Camera
-    * AP or STA = *your preference*
+    * WiFi SSID and WiFi Password
     * Camera Pins
         * Select Camera Pinout = *your variant of module*
