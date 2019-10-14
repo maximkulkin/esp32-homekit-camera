@@ -9,8 +9,6 @@
 #include <esp_err.h>
 #include <nvs_flash.h>
 
-#include <esp_sntp.h>
-
 #include "config.h"
 #include "accessory.h"
 
