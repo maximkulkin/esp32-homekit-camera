@@ -131,6 +131,10 @@ uint8_t* find_nal_start(uint8_t* start, uint8_t* end) {
 }
 
 
+static int video_socket = -1;
+static int video_port = 0;
+
+
 static int send_rtcp_sender_report(streaming_session_t *session) {
     uint8_t *buffer = (uint8_t*) malloc(RTP_MAX_PACKET_LENGTH);
 
@@ -159,7 +163,8 @@ static int send_rtcp_sender_report(streaming_session_t *session) {
     }
 
     ESP_LOGI(TAG, "Sending RTCP sender report (%d bytes)", encrypted_size);
-    int r = send(session->settings->video_socket, buffer, encrypted_size, 0);
+    int r = sendto(video_socket, buffer, encrypted_size, 0,
+                   (struct sockaddr*)&session->controller_addr, sizeof(session->controller_addr));
     if (r < 0) {
         ESP_LOGE(TAG, "Failed to send RTCP sender report packet (code %d)", r);
         free(buffer);
@@ -196,9 +201,11 @@ static int session_send_data(streaming_session_t *session, bool last) {
         return -1;
     }
 
-    ESP_LOGI(TAG, "Sending %d bytes to socket %d", encrypted_size, session->settings->video_socket);
+    ESP_LOGI(TAG, "Sending %d bytes to socket %d", encrypted_size, video_socket);
     ESP_LOGI(TAG, "Free heap: %d", xPortGetFreeHeapSize());
-    int r = send(session->settings->video_socket, session->video_buffer, encrypted_size, 0);
+    int r = sendto(video_socket, session->video_buffer, encrypted_size, 0,
+                   (struct sockaddr*)&session->controller_addr, sizeof(session->controller_addr));
+
     if (r < 0) {
         ESP_LOGE(TAG, "Failed to send RTP packet (code %d)", r);
         return -1;
@@ -432,8 +439,8 @@ int grab_camera_frame(x264_picture_t *pic) {
 static streaming_session_t *streaming_sessions = NULL;
 static SemaphoreHandle_t streaming_sessions_mutex = NULL;
 
-TaskHandle_t stream_task_handle = NULL;
-EventGroupHandle_t stream_control_events;
+static TaskHandle_t stream_task_handle = NULL;
+static EventGroupHandle_t stream_control_events;
 
 #define STREAM_CONTROL_EVENT_STOP (1 << 0)
 
@@ -441,7 +448,41 @@ EventGroupHandle_t stream_control_events;
 void stream_task(void *arg);
 
 
+int streaming_get_video_port() {
+    return video_port;
+}
+
+
+int streaming_get_audio_port() {
+    return video_port + 1;
+}
+
+
 int streaming_init() {
+    ESP_LOGI(TAG, "Initializing streaming");
+    video_socket = socket(PF_INET, SOCK_DGRAM, 0);
+    if (video_socket < 0) {
+        ESP_LOGE(TAG, "Failed to open video stream socket, error = %d", errno);
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    if (bind(video_socket, (struct sockaddr*)&addr, sizeof(addr))) {
+        ESP_LOGE(TAG, "Failed to bind video stream socket, error = %d", errno);
+        return -1;
+    }
+
+    socklen_t addr_len = sizeof(addr);
+
+    if (getsockname(video_socket, (struct sockaddr*)&addr, &addr_len)) {
+        ESP_LOGE(TAG, "Failed to get port of video stream socket, error = %d", errno);
+        return -1;
+    }
+
+    video_port = ntohs(addr.sin_port);
+
     streaming_sessions = NULL;
     streaming_sessions_mutex = xSemaphoreCreateBinary();
     xSemaphoreGive(streaming_sessions_mutex);
@@ -452,6 +493,7 @@ int streaming_init() {
         return -1;
     }
 
+    ESP_LOGI(TAG, "Streaming initialized");
     return 0;
 }
 
@@ -499,21 +541,22 @@ static streaming_session_t *streaming_session_new(camera_session_t *settings) {
     session->timestamp = 0;
 
     session->sequence = 123;
-    session->video_buffer = (uint8_t*) calloc(1, 2048);
+    session->video_buffer = (uint8_t*) calloc(1, RTP_MAX_PACKET_LENGTH);
+    if (!session->video_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate streaming session video buffer");
+        free(session);
+        return NULL;
+    }
     session->video_buffer_ptr = session->video_buffer + sizeof(rtp_header_t);
 
     session_init_crypto(session);
 
-    struct sockaddr_in remote_addr;
-    remote_addr.sin_family = AF_INET;
-    remote_addr.sin_port = htons(session->settings->controller_video_port);
-    if (inet_pton(AF_INET, session->settings->controller_ip_address, &remote_addr.sin_addr) <= 0) {
+    session->controller_addr.sin_family = AF_INET;
+    session->controller_addr.sin_port = htons(session->settings->controller_video_port);
+    if (inet_pton(AF_INET, session->settings->controller_ip_address, &session->controller_addr.sin_addr) <= 0) {
         ESP_LOGE(TAG, "Failed to parse controller IP address");
-        return NULL;
-    }
-
-    if (connect(session->settings->video_socket, (struct sockaddr*)&remote_addr, sizeof(remote_addr)) < 0) {
-        ESP_LOGE(TAG, "Failed to set video socket connect destination");
+        free(session->video_buffer);
+        free(session);
         return NULL;
     }
 

@@ -153,19 +153,12 @@ homekit_value_t camera_setup_endpoints_get() {
         return HOMEKIT_TLV(tlv_new());
     }
 
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
-
     tlv_values_t *accessory_address = tlv_new();
     tlv_add_integer_value(accessory_address, 1, 1, 0);
     tlv_add_string_value(accessory_address, 2, ip4addr_ntoa(&ip_address));
 
-    getsockname(session->video_socket, (struct sockaddr*)&addr, &addr_len);
-    tlv_add_integer_value(accessory_address, 3, 2, addr.sin_port);
-
-    // getsockname(session->audio_socket, (struct sockaddr*)&addr, &addr_len);
-    // tlv_add_integer_value(accessory_address, 4, 2, addr.sin_port);
-    tlv_add_integer_value(accessory_address, 4, 2, addr.sin_port+1);
+    tlv_add_integer_value(accessory_address, 3, 2, streaming_get_video_port());
+    tlv_add_integer_value(accessory_address, 4, 2, streaming_get_audio_port());
 
     tlv_values_t *video_rtp_params = tlv_new();
     tlv_add_integer_value(video_rtp_params, 1, 1, session->srtp_video_crypto_suite);
@@ -378,28 +371,6 @@ void camera_setup_endpoints_set(homekit_value_t value) {
     tlv_free(rtp_params);
 
     #undef error_msg
-
-    session->video_socket = socket(PF_INET, SOCK_DGRAM, 0);
-    if (session->video_socket < 0) {
-        ESP_LOGE(TAG, "Failed to open video stream socket, error = %d", errno);
-        session->status = 2;
-        return;
-    }
-
-    struct sockaddr_in remote_addr;
-    remote_addr.sin_family = AF_INET;
-    remote_addr.sin_port = htons(session->controller_video_port);
-    if (inet_pton(AF_INET, session->controller_ip_address, &remote_addr.sin_addr) <= 0) {
-        ESP_LOGE(TAG, "Failed to parse controller IP address");
-        session->status = 2;
-        return;
-    }
-
-    if (connect(session->video_socket, (struct sockaddr*)&remote_addr, sizeof(remote_addr)) < 0) {
-        ESP_LOGE(TAG, "Failed to set video socket connect destination");
-        session->status = 2;
-        return;
-    }
 
     if (camera_sessions_add(session)) {
         // session registration failed
@@ -704,7 +675,7 @@ void camera_accessory_init() {
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
-        return;
+        abort();
     }
 
     tlv_values_t *video_codec_params = tlv_new();
@@ -748,6 +719,7 @@ void camera_accessory_init() {
 
     homekit_server_init(&config);
     if (streaming_init()) {
-        // TODO: panic
+        ESP_LOGE(TAG, "Failed to initialize streaming");
+        abort();
     }
 }

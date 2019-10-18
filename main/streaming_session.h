@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include <sys/socket.h>
 #include "camera_session.h"
 
 
@@ -12,6 +13,8 @@ typedef struct {
 
 
 typedef struct _streaming_session {
+    struct sockaddr_in controller_addr;
+
     bool started;
     bool failed;
 
