@@ -135,8 +135,34 @@ static int video_socket = -1;
 static int video_port = 0;
 
 
-static int send_rtcp_sender_report(streaming_session_t *session) {
+static int session_send_encrypted(streaming_session_t *session, uint8_t *buffer, size_t size) {
+    int encrypted_size = session_encrypt(session, buffer, size, RTP_MAX_PACKET_LENGTH);
+    if (encrypted_size < 0) {
+        ESP_LOGE(TAG, "Failed to encrypt payload (code %d)", encrypted_size);
+        return -1;
+    }
+
+    int r;
+    do {
+        r = sendto(video_socket, buffer, encrypted_size, 0,
+                   (struct sockaddr*)&session->controller_addr, sizeof(session->controller_addr));
+    } while (r == -1 && errno == EAGAIN);
+
+    if (r < 0) {
+        ESP_LOGE(TAG, "Failed to send encrypted packet (code %d)", errno);
+        return -2;
+    }
+
+    return 0;
+}
+
+
+static int session_send_rtcp_sender_report(streaming_session_t *session) {
     uint8_t *buffer = (uint8_t*) malloc(RTP_MAX_PACKET_LENGTH);
+    if (!buffer) {
+        ESP_LOGE(TAG, "Failed to allocate buffer for RTCP Sender Report");
+        return -1;
+    }
 
     rtcp_header_t *rtcp_header = (rtcp_header_t*) buffer;
     memset(rtcp_header, 0, sizeof(*rtcp_header));
@@ -153,18 +179,9 @@ static int send_rtcp_sender_report(streaming_session_t *session) {
     sender_report->sender_packet_count = 0;
     sender_report->sender_octet_count = 0;
 
-    // dump_binary("RTCP Sender Report: ", buffer, sizeof(rtcp_header_t) + sizeof(rtcp_sender_report_t));
+    ESP_LOGI(TAG, "Sending RTCP sender report");
 
-    int encrypted_size = session_encrypt(session, buffer, sizeof(rtcp_header_t) + sizeof(rtcp_sender_report_t), RTP_MAX_PACKET_LENGTH);
-    if (encrypted_size < 0) {
-        ESP_LOGE(TAG, "Failed to encrypt RTCP payload (code %d)", encrypted_size);
-        free(buffer);
-        return -1;
-    }
-
-    ESP_LOGI(TAG, "Sending RTCP sender report (%d bytes)", encrypted_size);
-    int r = sendto(video_socket, buffer, encrypted_size, 0,
-                   (struct sockaddr*)&session->controller_addr, sizeof(session->controller_addr));
+    int r = session_send_encrypted(session, buffer, sizeof(rtcp_header_t) + sizeof(rtcp_sender_report_t));
     if (r < 0) {
         ESP_LOGE(TAG, "Failed to send RTCP sender report packet (code %d)", r);
         free(buffer);
@@ -192,26 +209,13 @@ static int session_send_data(streaming_session_t *session, bool last) {
 
     session->sequence = (session->sequence + 1) & 0xffff;
 
-    // dump_binary("Sending data: ", session->video_buffer, (size > 100) ? 100 : size);
-    // dump_binary("Sending data: ", session->video_buffer, size);
-
-    int encrypted_size = session_encrypt(session, session->video_buffer, size, RTP_MAX_PACKET_LENGTH);
-    if (encrypted_size < 0) {
-        ESP_LOGE(TAG, "Failed to encrypt RTP payload (code %d)", encrypted_size);
-        return -1;
-    }
-
-    ESP_LOGI(TAG, "Sending %d bytes to socket %d", encrypted_size, video_socket);
-    ESP_LOGI(TAG, "Free heap: %d", xPortGetFreeHeapSize());
-    int r = sendto(video_socket, session->video_buffer, encrypted_size, 0,
-                   (struct sockaddr*)&session->controller_addr, sizeof(session->controller_addr));
+    int r = session_send_encrypted(session, session->video_buffer, size);
+    session->video_buffer_ptr = session->video_buffer + sizeof(rtp_header_t);
 
     if (r < 0) {
         ESP_LOGE(TAG, "Failed to send RTP packet (code %d)", r);
         return -1;
     }
-
-    session->video_buffer_ptr = session->video_buffer + sizeof(rtp_header_t);
 
     return 0;
 }
@@ -379,7 +383,7 @@ static void jpeg_memory_src_set_source_mgr(j_decompress_ptr cinfo, const char* d
 int grab_camera_frame(x264_picture_t *pic) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
-        ESP_LOGD(TAG, "Camera capture failed");
+        ESP_LOGE(TAG, "Camera capture failed");
         return -1;
     }
 
@@ -533,6 +537,10 @@ static void streaming_sessions_unlock() {
 
 static streaming_session_t *streaming_session_new(camera_session_t *settings) {
     streaming_session_t *session = (streaming_session_t*) calloc(1, sizeof(streaming_session_t));
+    if (!session) {
+        ESP_LOGE(TAG, "Failed to allocate streaming session");
+        return NULL;
+    }
 
     session->settings = settings;
     session->started = false;
@@ -724,7 +732,7 @@ void stream_task(void *arg) {
 
             session->started = true;
             session->timestamp = get_time_millis() * 1000;
-            if (send_rtcp_sender_report(session)) {
+            if (session_send_rtcp_sender_report(session)) {
                 ESP_LOGE(TAG, "Error sending RTCP SenderReport to %s:%d",
                          session->settings->controller_ip_address,
                          session->settings->controller_video_port);
@@ -735,7 +743,6 @@ void stream_task(void *arg) {
         for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
             session->timestamp = get_time_millis() * 1000;
         }
-        ESP_LOGI(TAG, "Sending frame data");
 
         // dump_binary("Frame: ", nal->p_payload, frame_size);
 
@@ -755,6 +762,8 @@ void stream_task(void *arg) {
 
             nal_data = next_nal_data;
         }
+
+        ESP_LOGI(TAG, "Done sending frame data");
 
         for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
             if (session_flush_buffered(session, true))
@@ -784,8 +793,6 @@ void stream_task(void *arg) {
         }
 
         streaming_sessions_unlock();
-
-        ESP_LOGI(TAG, "Done sending frame data");
 
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
