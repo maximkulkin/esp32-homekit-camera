@@ -40,27 +40,31 @@ typedef enum {
 } session_command_t;
 
 
-const int camera_led_gpio = CONFIG_CAMERA_PIN_LED;
-bool camera_led_on = false;
+void led_set(bool on) {
+#if CONFIG_LED_PIN != -1
 
-void camera_led_set(bool on) {
-    gpio_set_level(camera_led_gpio, on ? 1 : 0);
-    camera_led_on = on;
+#if CONFIG_LED_ACTIVE_HIGH
+    gpio_set_level(CONFIG_LED_PIN, on ? 1 : 0);
+#else
+    gpio_set_level(CONFIG_LED_PIN, on ? 0 : 1);
+#endif
+
+#endif
 }
 
 void camera_identify_task(void *_args) {
     for (int i=0; i<3; i++) {
         for (int j=0; j<2; j++) {
-            camera_led_set(true);
+            led_set(true);
             vTaskDelay(100 / portTICK_PERIOD_MS);
-            camera_led_set(false);
+            led_set(false);
             vTaskDelay(100 / portTICK_PERIOD_MS);
         }
 
         vTaskDelay(250 / portTICK_PERIOD_MS);
     }
 
-    camera_led_set(true);
+    led_set(true);
 
     vTaskDelete(NULL);
 }
@@ -648,8 +652,10 @@ void camera_accessory_init() {
     ESP_LOGI(TAG, "Free heap: %d", xPortGetFreeHeapSize());
 
     // ESP_ERROR_CHECK(gpio_install_isr_service(0));
-    gpio_set_direction(camera_led_gpio, GPIO_MODE_OUTPUT);
-    gpio_set_level(camera_led_gpio, 1);
+#if CONFIG_LED_PIN >= 0
+    gpio_set_direction(CONFIG_LED_PIN, GPIO_MODE_OUTPUT);
+    led_set(false);
+#endif
 
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set("camera", ESP_LOG_VERBOSE);

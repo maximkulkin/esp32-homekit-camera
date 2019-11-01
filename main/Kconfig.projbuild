@@ -12,19 +12,11 @@ config ESP_WIFI_PASSWORD
     help
     WiFi password (WPA or WPA2) for the example to use.
 
-config MAX_STA_CONN
-    int "Max STA conn"
-    default 1
-    help
-    Max number of the STA connects to AP.
-
 config XCLK_FREQ
     int "XCLK Frequency"
     default "20000000"
     help
         The XCLK Frequency in Herz.
-
-menu "Camera Pins"
 
 choice CAMERA_MODEL
     bool "Select Camera Pinout"
@@ -47,6 +39,9 @@ config CAMERA_MODEL_DIYMORE
 config CAMERA_MODEL_CUSTOM
     bool "Custom Camera Pinout"
 endchoice
+
+menu "Custom Camera Pins"
+    depends on CAMERA_MODEL_CUSTOM
 
 config CAMERA_PIN_PWDN
     depends on CAMERA_MODEL_CUSTOM
@@ -176,13 +171,31 @@ config CAMERA_PIN_D7
     help
         Select Camera Y9 pin.
 
-config CAMERA_PIN_LED
-    int "Camera LED"
-    range 0 39
-    default "16"
-    help
-        Select LED pin
-
 endmenu
+
+config LED_PIN
+    int "LED pin"
+    range -1 39
+    default "1"
+    help
+        Select LED pin. Set to -1 to disable.
+
+choice LED_ACTIVE_STATE
+    bool "LED active state"
+    default LED_ACTIVE_HIGH
+    help
+        On which GPIO pin level LED is lit
+
+config LED_ACTIVE_HIGH
+    bool "HIGH"
+    help
+        LED is lit when GPIO pin level is set to high
+
+config LED_ACTIVE_LOW
+    bool "LOW"
+    help
+        LED is lit when GPIO pin level is set to low
+
+endchoice
 
 endmenu
