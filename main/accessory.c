@@ -708,10 +708,8 @@ void camera_accessory_init() {
 
     tlv_values_t *video_attributes = tlv_new();
     // FIXME:
-    // tlv_add_integer_value(video_attributes, 1, 2, CAMERA_WIDTH);  // Image width
-    // tlv_add_integer_value(video_attributes, 2, 2, CAMERA_HEIGHT);  // Image height
-    tlv_add_integer_value(video_attributes, 1, 2, 640);  // Image width
-    tlv_add_integer_value(video_attributes, 2, 2, 480);  // Image height
+    tlv_add_integer_value(video_attributes, 1, 2, CAMERA_WIDTH);  // Image width
+    tlv_add_integer_value(video_attributes, 2, 2, CAMERA_HEIGHT);  // Image height
     tlv_add_integer_value(video_attributes, 3, 1, CAMERA_FRAME_RATE);  // Frame rate
 
     tlv_values_t *video_codec_config = tlv_new();

@@ -387,8 +387,8 @@ int grab_camera_frame(x264_picture_t *pic) {
 
     dinfo.raw_data_out = true;
     dinfo.out_color_space = JCS_YCbCr;
-    dinfo.scale_num = 1;
-    dinfo.scale_denom = 8;
+    dinfo.scale_num = VIDEO_IMAGE_SCALE_NUM;
+    dinfo.scale_denom = VIDEO_IMAGE_SCALE_DENOM;
     jpeg_start_decompress(&dinfo);
 
     ESP_LOGI(TAG, "JPEG output size: %dx%d", dinfo.output_width, dinfo.output_height);
