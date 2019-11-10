@@ -42,7 +42,8 @@ typedef enum {
 
 void led_set(bool on) {
 #if CONFIG_LED_PIN != -1
-
+    gpio_pad_select_gpio(CONFIG_LED_PIN);
+    gpio_set_direction(CONFIG_LED_PIN, GPIO_MODE_OUTPUT);
 #if CONFIG_LED_ACTIVE_HIGH
     gpio_set_level(CONFIG_LED_PIN, on ? 1 : 0);
 #else
@@ -677,6 +678,10 @@ void camera_accessory_init() {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
         abort();
     }
+
+    sensor_t *s = esp_camera_sensor_get();
+    s->set_hmirror(s, 1);
+    s->set_vflip(s, 1);
 
     tlv_values_t *video_codec_params = tlv_new();
     tlv_add_integer_value(video_codec_params, 1, 1, 1);  // Profile ID
