@@ -27,7 +27,11 @@ static esp_err_t event_handler(void *ctx, system_event_t *event) {
             break;
         case SYSTEM_EVENT_STA_GOT_IP:
             ESP_LOGI(TAG, "WiFI ready");
-            camera_accessory_set_ip_address(event->event_info.got_ip.ip_info.ip);
+
+            camera_accessory_set_ip_address((ip4_addr_t){
+                .addr = event->event_info.got_ip.ip_info.ip.addr
+            });
+
             on_wifi_ready();
             break;
         case SYSTEM_EVENT_STA_DISCONNECTED:
