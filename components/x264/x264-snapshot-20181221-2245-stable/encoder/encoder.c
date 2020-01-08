@@ -1563,6 +1563,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
     x264_bitstream_init( h->param.cpu, &h->bsf );
     if( h->param.b_cabac )
         x264_cabac_init( h );
+    else
+        x264_cavlc_init( h );
 
     mbcmp_init( h );
     chroma_dsp_init( h );
