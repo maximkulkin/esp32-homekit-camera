@@ -75,13 +75,13 @@ void x264_bitstream_init( int cpu, x264_bitstream_function_t *pf );
  * FIXME: Do further testing? */
 #define LEVEL_TABLE_SIZE 128
 #define x264_level_token x264_template(level_token)
-extern vlc_large_t x264_level_token[7][LEVEL_TABLE_SIZE];
+extern vlc_large_t *x264_level_token;
 
 /* The longest possible set of zero run codes sums to 25 bits.  This leaves
  * plenty of room for both the code (25 bits) and size (5 bits) in a uint32_t. */
 
 #define x264_run_before x264_template(run_before)
-extern uint32_t x264_run_before[1<<16];
+extern uint32_t *x264_run_before;
 
 static inline void bs_init( bs_t *s, void *p_data, int i_data )
 {

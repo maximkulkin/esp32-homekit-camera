@@ -27,11 +27,14 @@
 
 #include "common.h"
 
-vlc_large_t x264_level_token[7][LEVEL_TABLE_SIZE];
-uint32_t x264_run_before[1<<16];
+vlc_large_t *x264_level_token;
+uint32_t *x264_run_before;
 
 void x264_cavlc_init( x264_t *h )
 {
+    x264_level_token = (vlc_large_t*) malloc(sizeof(vlc_large_t) * 7 * LEVEL_TABLE_SIZE);
+    x264_run_before = (uint32_t*) malloc(sizeof(uint32_t) * (1<<16));
+
     for( int i_suffix = 0; i_suffix < 7; i_suffix++ )
         for( int16_t level = -LEVEL_TABLE_SIZE/2; level < LEVEL_TABLE_SIZE/2; level++ )
         {
@@ -39,7 +42,7 @@ void x264_cavlc_init( x264_t *h )
             int abs_level = (level^mask)-mask;
             int i_level_code = abs_level*2-mask-2;
             int i_next = i_suffix;
-            vlc_large_t *vlc = &x264_level_token[i_suffix][level+LEVEL_TABLE_SIZE/2];
+            vlc_large_t *vlc = &x264_level_token[i_suffix * LEVEL_TABLE_SIZE + level+LEVEL_TABLE_SIZE/2];
 
             if( ( i_level_code >> i_suffix ) < 14 )
             {

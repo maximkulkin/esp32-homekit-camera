@@ -159,8 +159,8 @@ static int cavlc_block_residual_internal( x264_t *h, int ctx_block_cat, dctcoef 
 
         if( (unsigned)val_original < LEVEL_TABLE_SIZE )
         {
-            bs_write_vlc( s, x264_level_token[i_suffix_length][val] );
-            i_suffix_length = x264_level_token[i_suffix_length][val_original].i_next;
+            bs_write_vlc( s, x264_level_token[i_suffix_length * LEVEL_TABLE_SIZE + val] );
+            i_suffix_length = x264_level_token[i_suffix_length * LEVEL_TABLE_SIZE + val_original].i_next;
         }
         else
             i_suffix_length = cavlc_block_residual_escape( h, i_suffix_length, val-LEVEL_TABLE_SIZE/2 );
@@ -169,8 +169,8 @@ static int cavlc_block_residual_internal( x264_t *h, int ctx_block_cat, dctcoef 
             val = runlevel.level[i] + LEVEL_TABLE_SIZE/2;
             if( (unsigned)val < LEVEL_TABLE_SIZE )
             {
-                bs_write_vlc( s, x264_level_token[i_suffix_length][val] );
-                i_suffix_length = x264_level_token[i_suffix_length][val].i_next;
+                bs_write_vlc( s, x264_level_token[i_suffix_length * LEVEL_TABLE_SIZE + val] );
+                i_suffix_length = x264_level_token[i_suffix_length * LEVEL_TABLE_SIZE + val].i_next;
             }
             else
                 i_suffix_length = cavlc_block_residual_escape( h, i_suffix_length, val-LEVEL_TABLE_SIZE/2 );
