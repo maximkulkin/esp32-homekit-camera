@@ -12,7 +12,7 @@
 
 // Scale factors to get image for video stream
 #define VIDEO_IMAGE_SCALE_NUM 1
-#define VIDEO_IMAGE_SCALE_DENOM 8
+#define VIDEO_IMAGE_SCALE_DENOM 4
 
 // Calculated stuff
 #define VIDEO_IMAGE_SCALED(x) ((x) * VIDEO_IMAGE_SCALE_NUM / VIDEO_IMAGE_SCALE_DENOM)

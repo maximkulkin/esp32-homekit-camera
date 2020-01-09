@@ -644,6 +644,11 @@ void stream_task(void *arg) {
     x264_param_t param;
     x264_param_default(&param);
 
+    if (x264_param_apply_profile(&param, "baseline") < 0) {
+        ESP_LOGE(TAG, "Failed to intialize H.264 profile");
+        return;
+    }
+
     if (x264_param_default_preset(&param, "ultrafast", "zerolatency") < 0) {
         ESP_LOGE(TAG, "Failed to initialize H.264 preset");
         return;
@@ -653,21 +658,12 @@ void stream_task(void *arg) {
     param.i_height = VIDEO_HEIGHT;
     param.i_bitdepth = 8;
     param.i_csp = X264_CSP_I420;
-    // param.i_fps_num = 1;
-    // param.i_fps_den = 1;
     param.i_threads = 1;
-    param.b_repeat_headers = 1;
+    // param.b_repeat_headers = 1;
 
-    // param.i_frame_reference = 1;
-    // param.i_bframe = 0;
+    param.i_keyint_max = 1;
 
-    param.i_keyint_max = 10;
-    // param.b_intra_refresh = 0;
-
-    if (x264_param_apply_profile(&param, "baseline") < 0) {
-        ESP_LOGE(TAG, "Failed to intialize H.264 profile");
-        return;
-    }
+    param.rc.i_qp_constant = 26;
 
     x264_picture_t pic, pic_out;
 
