@@ -565,11 +565,11 @@ homekit_accessory_t *accessories[] = {
                       .services=(homekit_service_t*[])
     {
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
-            HOMEKIT_CHARACTERISTIC(NAME, "Camera"),
-            HOMEKIT_CHARACTERISTIC(MANUFACTURER, "HaPK"),
-            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "1"),
-            HOMEKIT_CHARACTERISTIC(MODEL, "1"),
-            HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "0.1"),
+            HOMEKIT_CHARACTERISTIC(NAME, CONFIG_ESP_HOMEKIT_DEVICE_MODEL_NAME),
+            HOMEKIT_CHARACTERISTIC(MANUFACTURER, CONFIG_ESP_HOMEKIT_DEVICE_MANUFACTURER),
+            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, CONFIG_ESP_HOMEKIT_DEVICE_SERIAL_NUMBER),
+            HOMEKIT_CHARACTERISTIC(MODEL, CONFIG_ESP_HOMEKIT_DEVICE_MODEL_NUMBER),
+            HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, CONFIG_ESP_HOMEKIT_DEVICE_FIRMWARE_VERSION),
             HOMEKIT_CHARACTERISTIC(IDENTIFY, camera_identify),
             NULL
         }),
@@ -613,7 +613,7 @@ homekit_accessory_t *accessories[] = {
 
 homekit_server_config_t config = {
     .accessories = accessories,
-    .password = "111-11-111",
+    .password = CONFIG_ESP_HOMEKIT_DEVICE_SETUP_CODE,
     .on_event = camera_on_event,
     .on_resource = camera_on_resource,
 };
