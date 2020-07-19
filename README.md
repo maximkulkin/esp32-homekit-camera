@@ -60,6 +60,14 @@ Before compiling, you need to alter several settings in **menuconfig**:
         * Toggle if HomeKit app has video feed mirrored
     * Image sensor enhance settings
         * EXPERIMENTAL: adjusts contrast, saturation, etc for *better* image quality
+    * HomeKit Device Setup Code
+    * HomeKit Device Manufacturer
+    * HomeKit Device model name
+    * HomeKit Device model number
+    * HomeKit Device Serial number
+    * HomeKit Device Firmware version
+
+
     
 ## Add camera to HomeKit app
 
