@@ -24,7 +24,7 @@
 
 
 static ip4_addr_t ip_address;
-
+static char wifi_mac_address[32];
 
 void camera_accessory_set_ip_address(ip4_addr_t ip) {
     ip_address = ip;
@@ -567,7 +567,13 @@ homekit_accessory_t *accessories[] = {
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
             HOMEKIT_CHARACTERISTIC(NAME, CONFIG_ESP_HOMEKIT_DEVICE_MODEL_NAME),
             HOMEKIT_CHARACTERISTIC(MANUFACTURER, CONFIG_ESP_HOMEKIT_DEVICE_MANUFACTURER),
-            HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, CONFIG_ESP_HOMEKIT_DEVICE_SERIAL_NUMBER),
+
+            #if CONFIG_ESP_HOMEKIT_DEVICE_SERIAL_NUMBER_MAC
+                HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, wifi_mac_address),
+            #else
+                HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, CONFIG_ESP_HOMEKIT_DEVICE_SERIAL_NUMBER),
+            #endif  
+
             HOMEKIT_CHARACTERISTIC(MODEL, CONFIG_ESP_HOMEKIT_DEVICE_MODEL_NUMBER),
             HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, CONFIG_ESP_HOMEKIT_DEVICE_FIRMWARE_VERSION),
             HOMEKIT_CHARACTERISTIC(IDENTIFY, camera_identify),
@@ -630,6 +636,12 @@ void camera_accessory_init() {
 
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set("camera", ESP_LOG_VERBOSE);
+
+    // get WIFI MAC address & store it for later use
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    sprintf(wifi_mac_address, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    ESP_LOGI(TAG, "Device WIFI mac_address=\"%s\"", wifi_mac_address);
 
     /* IO13, IO14 is designed for JTAG by default,
      * to use it as generalized input,

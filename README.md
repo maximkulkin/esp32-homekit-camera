@@ -26,7 +26,7 @@ Based on [esp-homekit](https://github.com/maximkulkin/esp-homekit).
 
 ## Menuconfig settings
 
-Before compiling, you need to alter several settings in **menuconfig**:
+Before compiling, you need to alter several settings in **menuconfig**, follow configuration prompts `make menuconfig`:
 * Serial flasher config
     * Default serial port
     * Flash size = **4 MB**
@@ -49,6 +49,7 @@ Before compiling, you need to alter several settings in **menuconfig**:
 * ESP32 HomeKit Camera
     * WiFi SSID
     * WiFi Password
+    * Device hostname
     * Select Camera Pinout
         * Select Camera Pinout = *your variant of module*
     * LED Pin
@@ -65,6 +66,8 @@ Before compiling, you need to alter several settings in **menuconfig**:
     * HomeKit Device model name
     * HomeKit Device model number
     * HomeKit Device Serial number
+    * Use WIFI MAC address as serial number
+        * Note: this takes precedence over static serial number setting above
     * HomeKit Device Firmware version
 
 
