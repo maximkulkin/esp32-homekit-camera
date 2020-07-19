@@ -198,4 +198,26 @@ config LED_ACTIVE_LOW
 
 endchoice
 
+
+# Option to change vertical video orientation
+config ESP_SET_VFLIP
+    bool "Image sensor vertical flip"
+    default n
+    help
+        Enable image vertical flip
+
+# Option to change horizontal mirror video orientation
+config ESP_SET_HMIRROR
+    bool "Image sensor horizontal mirror"
+    default n
+    help
+        Enable image horizontal mirror
+
+# Option to enhance image
+config ESP_SET_ENHANCE_IMAGE
+    bool "Image sensor enhance settings"
+    default n
+    help
+        Enable image enhancement by adjusting settings such as contrast, saturation, etc
+
 endmenu
