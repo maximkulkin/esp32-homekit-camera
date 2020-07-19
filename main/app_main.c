@@ -47,6 +47,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event) {
 
 static void wifi_init() {
     tcpip_adapter_init();
+    ESP_ERROR_CHECK(tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA, CONFIG_ESP_HOSTNAME));
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
 
     wifi_init_config_t wifi_init_config = WIFI_INIT_CONFIG_DEFAULT();

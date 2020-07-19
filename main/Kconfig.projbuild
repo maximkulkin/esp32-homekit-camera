@@ -12,6 +12,12 @@ config ESP_WIFI_PASSWORD
     help
     WiFi password (WPA or WPA2) for the example to use.
 
+config ESP_HOSTNAME
+    string "Device hostname"
+    default "esp-cam"
+    help
+        Device hostname for the example to use.
+
 config XCLK_FREQ
     int "XCLK Frequency"
     default "20000000"
@@ -229,6 +235,12 @@ config ESP_HOMEKIT_DEVICE_SERIAL_NUMBER
     default "1"
     help
     HomeKit serial number the example to use.
+
+config ESP_HOMEKIT_DEVICE_SERIAL_NUMBER_MAC
+    bool "Use WIFI MAC address as serial number"
+    default n
+    help
+        HomeKit serial number the example to use. Takes precedence over static serial.
 
 config ESP_HOMEKIT_DEVICE_FIRMWARE_VERSION
     string "HomeKit Device Firmware version"
