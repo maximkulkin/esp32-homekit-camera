@@ -22,6 +22,7 @@ Based on [esp-homekit](https://github.com/maximkulkin/esp-homekit).
 1. To prevent any effects from previous firmware (e.g. firmware crashing right at start), highly recommend to erase flash `make erase_flash`
 1. Upload Upload firmware to ESP32 `make flash monitor`
     * Note, ESP32 **GPIO0** pin needs to be connected to **GND** pin to enable flashing
+    * To exit monitor, on mac *control+]*
 
 ## Menuconfig settings
 
@@ -53,6 +54,12 @@ Before compiling, you need to alter several settings in **menuconfig**:
     * LED Pin
         * PIN = *your variant of module*
             * ESP32-CAM by AI-Thinker == **33**
+    * Image sensor vertical flip
+        * Toggle if HomeKit app has video feed upside down
+    * Image sensor horizontal mirror
+        * Toggle if HomeKit app has video feed mirrored
+    * Image sensor enhance settings
+        * EXPERIMENTAL: adjusts contrast, saturation, etc for *better* image quality
     
 ## Add camera to HomeKit app
 

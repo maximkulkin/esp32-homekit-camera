@@ -678,6 +678,20 @@ void camera_accessory_init() {
         abort();
     }
 
+    // image sensor settings
+    sensor_t * s = esp_camera_sensor_get();
+    
+    #if CONFIG_ESP_SET_VFLIP
+        s->set_vflip(s, 1);
+    #endif
+    #if CONFIG_ESP_SET_HMIRROR
+        s->set_hmirror(s, 1);
+    #endif
+    #if CONFIG_ESP_SET_ENHANCE_IMAGE
+        s->set_saturation(s, -2);
+        s->set_contrast(s, 2);  
+    #endif
+
     tlv_values_t *video_codec_params = tlv_new();
     tlv_add_integer_value(video_codec_params, 1, 1, 1);  // Profile ID
     tlv_add_integer_value(video_codec_params, 2, 1, 0);  // Level
