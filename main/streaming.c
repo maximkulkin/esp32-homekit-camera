@@ -723,10 +723,12 @@ void stream_task(void *arg) {
 
         streaming_sessions_lock();
         for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
-            if (session->started)
-                continue;
-
-            session->started = true;
+            
+            if (!session->started)
+            {
+                session->started = true;
+            }
+            
             session->timestamp = get_time_millis() * 1000;
             if (session_send_rtcp_sender_report(session)) {
                 ESP_LOGE(TAG, "Error sending RTCP SenderReport to %s:%d",
