@@ -1,6 +1,3 @@
-[submodule "components/cJSON"]
-	path = components/cJSON
-	url = https://github.com/maximkulkin/esp-cjson
 [submodule "components/wolfssl"]
 	path = components/wolfssl
 	url = https://github.com/maximkulkin/esp-wolfssl
